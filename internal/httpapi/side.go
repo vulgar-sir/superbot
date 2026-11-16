@@ -131,6 +131,7 @@ func (s *Server) handleAskSide(w http.ResponseWriter, r *http.Request) {
 		MaxTokens: sideMaxTokens,
 	}
 	answer, usage, callErr := collectText(ctx, provider, request)
+	answer = llm.StripArtifacts(answer)
 	status, errText := "answered", ""
 	if callErr != nil {
 		status, errText = "failed", callErr.Error()

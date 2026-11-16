@@ -654,7 +654,7 @@ func (e *Engine) runBotTurnSeeded(ctx context.Context, conv store.Conversation, 
 	}
 	e.closeProgress(ctx, cycle.ID)
 
-	finalText := strings.TrimSpace(textAll.String())
+	finalText := llm.StripArtifacts(strings.TrimSpace(textAll.String()))
 	if finalText == "" {
 		if outcome.Warning != "" {
 			finalText = "（达到工具调用步数上限，模型未生成最终回复）"

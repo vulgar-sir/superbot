@@ -18,6 +18,7 @@ import {
 import { BotAvatar } from "./BotAvatar";
 import { AgentThreadGroup } from "./AgentThreadGroup";
 import { summarizeThread } from "@/lib/agentThreads";
+import { stripModelArtifacts } from "@/lib/modelText";
 import { Markdown } from "./Markdown";
 import { Menu, type MenuItem } from "./ui/Menu";
 import { useToast } from "./ui/Toast";
@@ -458,7 +459,7 @@ export function ChatMessage({
             </div>
           )}
           <div className="sb-bubble" data-group={groupPosition ?? "single"}>
-            <Markdown content={message.content} />
+            <Markdown content={stripModelArtifacts(message.content)} />
             <MessageAttachments attachments={message.attachments} tone="bot" />
             {message.poll && (
               <PollCard poll={message.poll} busy={pollBusy} onVote={votePoll} />

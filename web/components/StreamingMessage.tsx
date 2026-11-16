@@ -3,6 +3,7 @@
 
 import { BotAvatar } from "./BotAvatar";
 import { Markdown } from "./Markdown";
+import { stripModelArtifacts } from "@/lib/modelText";
 import type { Bot, StreamState } from "@/lib/types";
 
 export function StreamingMessage({
@@ -39,7 +40,7 @@ export function StreamingMessage({
           <div className="sb-bubble" data-group="single">
             {hasText ? (
               <div>
-                <Markdown content={stream.text} />
+                <Markdown content={stripModelArtifacts(stream.text, true)} />
                 {running && <span className="sb-caret" />}
               </div>
             ) : (
