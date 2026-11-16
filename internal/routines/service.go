@@ -45,6 +45,35 @@ func (s *Service) nextRun(expr string, from time.Time) (*time.Time, error) {
 	return &next, nil
 }
 
+// accountLocation is the time zone an account's schedules are read in: the
+// account's own setting (Settings → time zone), else the platform default.
+// "每天 9:00" then means 9:00 for the person who set it up, not for the server.
+func (s *Service) accountLocation(ctx context.Context, accountID uuid.UUID) *time.Location {
+	if s.db != nil {
+		if raw, err := s.db.GetSetting(ctx, "timezone:"+accountID.String()); err == nil {
+			var prefs struct {
+				Timezone string `json:"timezone"`
+			}
+			if json.Unmarshal(raw, &prefs) == nil && strings.TrimSpace(prefs.Timezone) != "" {
+				if loc, err := time.LoadLocation(strings.TrimSpace(prefs.Timezone)); err == nil {
+					return loc
+				}
+			}
+		}
+	}
+	if loc, err := time.LoadLocation(defaultBotTimezone); err == nil {
+		return loc
+	}
+	return time.Local
+}
+
+func (s *Service) teamLocation(ctx context.Context, teamID uuid.UUID) *time.Location {
+	if team, err := s.db.GetTeamByID(ctx, teamID); err == nil {
+		return s.accountLocation(ctx, team.OwnerID)
+	}
+	return s.accountLocation(ctx, uuid.Nil)
+}
+
 func (s *Service) Create(ctx context.Context, ownerID, teamID uuid.UUID, name, cronExpr, prompt string, enabled bool) (store.Routine, error) {
 	if _, err := s.db.GetTeam(ctx, store.GetTeamParams{ID: teamID, OwnerID: ownerID}); err != nil {
 		return store.Routine{}, fmt.Errorf("team not found")
@@ -57,7 +86,7 @@ func (s *Service) Create(ctx context.Context, ownerID, teamID uuid.UUID, name, c
 	var next *time.Time
 	if enabled {
 		var err error
-		next, err = s.nextRun(cronExpr, time.Now())
+		next, err = s.nextRun(cronExpr, time.Now().In(s.accountLocation(ctx, ownerID)))
 		if err != nil {
 			return store.Routine{}, err
 		}
@@ -84,7 +113,7 @@ func (s *Service) Update(ctx context.Context, ownerID, routineID uuid.UUID, name
 	}
 	var next *time.Time
 	if enabled {
-		next, err = s.nextRun(cronExpr, time.Now())
+		next, err = s.nextRun(cronExpr, time.Now().In(s.accountLocation(ctx, ownerID)))
 		if err != nil {
 			return store.Routine{}, err
 		}
@@ -221,7 +250,7 @@ func (s *Service) ReconcileDue(ctx context.Context) {
 		if err := s.createRoutineRun(ctx, routine); err != nil {
 			s.logger.Warn("routine run failed", "routine_id", routine.ID, "error", err)
 		}
-		next, nextErr := s.nextRun(routine.Cron, time.Now())
+		next, nextErr := s.nextRun(routine.Cron, time.Now().In(s.teamLocation(ctx, routine.TeamID)))
 		if nextErr != nil {
 			s.logger.Warn("routine cron is invalid; disabling", "routine_id", routine.ID, "error", nextErr)
 			_, _ = s.db.DisableRoutine(ctx, routine.ID)
