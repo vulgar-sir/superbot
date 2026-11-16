@@ -15,8 +15,9 @@ docker build -t superbot/computer-desktop:latest -f deploy/images/computer/Docke
 bash deploy/harden-data-permissions.sh "$(pwd)/data"
 docker compose --env-file .env -f deploy/docker-compose.yml up -d
 docker compose --env-file .env -f deploy/docker-compose.yml ps
-# Keep Docker's disk in check: drop dangling images left by rebuilds and
-# build cache older than a week (bot computers share one image, so this
-# never touches their files).
+# Keep Docker's disk in check: drop dangling images left by rebuilds and cap
+# the build cache at 15GB, least recently used first (frequent deploys
+# otherwise pile up tens of GB). Bot computers share one image and keep their
+# files outside Docker, so this never touches them.
 docker image prune -f >/dev/null
-docker builder prune -f --filter until=168h >/dev/null
+docker builder prune -f --max-used-space 15gb >/dev/null 2>&1   || docker builder prune -f --keep-storage 15gb >/dev/null
