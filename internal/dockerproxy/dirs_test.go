@@ -43,11 +43,14 @@ func TestDirsCreatesOnlySandboxDirectories(t *testing.T) {
 	proxy, root := dirsProxy(t)
 	workspace := root + "/workspaces/" + testBot
 	shared := root + "/teams/" + testBot + "/shared"
-	if res := postDirs(proxy, workspace, shared); res.Code != http.StatusOK {
+	drive := root + "/shared/" + testBot
+	if res := postDirs(proxy, workspace, shared, drive); res.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", res.Code, res.Body.String())
 	}
 	for path, mode := range map[string]os.FileMode{
 		workspace:                  0o777,
+		drive:                      0o777,
+		root + "/shared":           0o755,
 		shared:                     0o777,
 		root + "/teams/" + testBot: 0o755,
 		root + "/workspaces":       0o755,
@@ -107,5 +110,64 @@ func TestBindSourceWithSymlinkIsRefused(t *testing.T) {
 	if err := proxy.policy.checkSource(root + "/workspaces/22222222-2222-3333-4444-555555555555"); err == nil ||
 		!strings.Contains(err.Error(), "does not exist") {
 		t.Fatalf("a missing source must be refused rather than created by Docker, got %v", err)
+	}
+}
+
+func deleteDirs(proxy *Proxy, paths ...string) *httptest.ResponseRecorder {
+	body, _ := json.Marshal(map[string]any{"paths": paths})
+	recorder := httptest.NewRecorder()
+	proxy.ServeHTTP(recorder, httptest.NewRequest(http.MethodDelete, dirsPath, bytes.NewReader(body)))
+	return recorder
+}
+
+func TestRemoveDirsRemovesOnlyEmptyWorkspaces(t *testing.T) {
+	proxy, root := dirsProxy(t)
+	workspace := root + "/workspaces/" + testBot
+	drive := root + "/shared/" + testBot
+	shared := root + "/teams/" + testBot + "/shared"
+	if res := postDirs(proxy, workspace, drive, shared); res.Code != http.StatusOK {
+		t.Fatalf("create: %d %s", res.Code, res.Body.String())
+	}
+
+	// A workspace with files is never removed: the worker empties it first.
+	if err := os.WriteFile(workspace+"/keep.txt", []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if res := deleteDirs(proxy, workspace); res.Code != http.StatusConflict {
+		t.Fatalf("non-empty workspace: want 409, got %d %s", res.Code, res.Body.String())
+	}
+	if _, err := os.Stat(workspace + "/keep.txt"); err != nil {
+		t.Fatalf("files must survive: %v", err)
+	}
+
+	// Drives, team folders, parents and traversal are refused.
+	for _, target := range []string{drive, shared, root + "/workspaces", workspace + "/../" + testBot, "/etc"} {
+		if res := deleteDirs(proxy, target); res.Code != http.StatusForbidden {
+			t.Fatalf("%s: want 403, got %d %s", target, res.Code, res.Body.String())
+		}
+	}
+
+	if err := os.Remove(workspace + "/keep.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if res := deleteDirs(proxy, workspace); res.Code != http.StatusOK {
+		t.Fatalf("empty workspace: %d %s", res.Code, res.Body.String())
+	}
+	if _, err := os.Stat(workspace); !os.IsNotExist(err) {
+		t.Fatalf("workspace should be gone: %v", err)
+	}
+	// Removing again is not an error.
+	if res := deleteDirs(proxy, workspace); res.Code != http.StatusOK {
+		t.Fatalf("second remove: %d %s", res.Code, res.Body.String())
+	}
+	// A symlink in place of a workspace is refused, not followed.
+	if err := os.Symlink(drive, workspace); err != nil {
+		t.Fatal(err)
+	}
+	if res := deleteDirs(proxy, workspace); res.Code != http.StatusForbidden {
+		t.Fatalf("symlink: want 403, got %d %s", res.Code, res.Body.String())
+	}
+	if _, err := os.Stat(drive); err != nil {
+		t.Fatalf("drive must survive: %v", err)
 	}
 }

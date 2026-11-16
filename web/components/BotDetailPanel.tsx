@@ -38,7 +38,7 @@ import { BotAvatarPicker } from "./BotAvatarPicker";
 import { GOAL_SECTION_ID } from "./GoalPanel";
 import { useLanguage } from "./LanguageProvider";
 import { Markdown } from "./Markdown";
-import { cn, timeAgo } from "@/lib/format";
+import { cn, formatBytes, timeAgo } from "@/lib/format";
 import type {
   Activity,
   Bot,
@@ -94,7 +94,7 @@ export function BotDetailPanel({
   routinesSection,
 }: Props) {
   const { t } = useLanguage();
-  const computerState = useComputerState(bot);
+  const { state: computerState, diskBytes: computerDisk } = useComputerState(bot);
   const { toast } = useToast();
   const { confirm, confirmElement } = useConfirm();
   const [tab, setTab] = useState<"detail" | "library" | "files" | "computer">("detail");
@@ -117,6 +117,9 @@ export function BotDetailPanel({
   const [libraryUploading, setLibraryUploading] = useState(false);
   const [files, setFiles] = useState<BotFileEntry[]>([]);
   const [filePath, setFilePath] = useState("");
+  // "bot": this bot's private workspace (/workspace); "drive": the account's
+  // shared drive (/shared) that every bot reads and writes.
+  const [fileScope, setFileScope] = useState<"bot" | "drive">("bot");
   const [filesLoading, setFilesLoading] = useState(false);
   const libraryFileRef = useRef<HTMLInputElement>(null);
   const [itemMenu, setItemMenu] = useState<{ item: LibraryItem; rect: DOMRect } | null>(null);
@@ -444,8 +447,7 @@ export function BotDetailPanel({
     if (tab !== "files" || !bot) return;
     let cancelled = false;
     setFilesLoading(true);
-    api
-      .listBotFiles(bot.id, filePath)
+    (fileScope === "drive" ? api.listDriveFiles(filePath) : api.listBotFiles(bot.id, filePath))
       .then((result) => {
         if (!cancelled) setFiles(result.files);
       })
@@ -456,7 +458,7 @@ export function BotDetailPanel({
     return () => {
       cancelled = true;
     };
-  }, [tab, bot, filePath]);
+  }, [tab, bot, filePath, fileScope]);
 
   const uploadLibraryFile = async (file: File) => {
     const target = bot ?? team?.bots[0]?.bot;
@@ -930,6 +932,9 @@ export function BotDetailPanel({
                         <span className="h-1.5 w-1.5 rounded-full bg-[var(--sb-success,#22c55e)]" aria-hidden />
                       )}
                       {t(`detail.computerState.${computerState}`)}
+                      {computerDisk > 0 && (
+                        <span className="text-[var(--sb-text-3)]">· {t("detail.diskUsed", { size: formatBytes(computerDisk) })}</span>
+                      )}
                     </div>
                   </div>
                   <span className="flex h-11 w-[68px] items-center justify-center overflow-hidden rounded-md bg-gradient-to-br from-[#d9d9d9] to-[#8f8f8f] text-white">
@@ -1002,6 +1007,31 @@ export function BotDetailPanel({
           </div>
         ) : tab === "files" ? (
           <div className="pb-4 pt-4">
+            <div className="mb-2 flex items-center gap-1.5" role="tablist" aria-label={t("detail.filesScope")}>
+              {(["bot", "drive"] as const).map((scope) => (
+                <button
+                  key={scope}
+                  type="button"
+                  role="tab"
+                  aria-selected={fileScope === scope}
+                  onClick={() => {
+                    setFileScope(scope);
+                    setFilePath("");
+                  }}
+                  className={cn(
+                    "rounded-full px-3 py-1 text-[12px] transition",
+                    fileScope === scope
+                      ? "bg-[var(--sb-text)] text-[var(--sb-bg)]"
+                      : "bg-[var(--sb-hover)] text-[var(--sb-text-2)] hover:text-[var(--sb-text)]",
+                  )}
+                >
+                  {scope === "bot" ? t("detail.filesScopeBot") : t("detail.filesScopeDrive")}
+                </button>
+              ))}
+            </div>
+            <p className="mb-3 text-[11px] leading-[16px] text-[var(--sb-text-3)]">
+              {fileScope === "bot" ? t("detail.filesScopeBotHint") : t("detail.filesScopeDriveHint")}
+            </p>
             {filePath && (
               <button
                 type="button"
@@ -1017,7 +1047,9 @@ export function BotDetailPanel({
               <div className="sb-empty">
                 <Folder className="h-5 w-5" />
                 <div className="sb-empty-title">{t("detail.filesEmpty")}</div>
-                <div className="sb-empty-desc">{t("detail.filesEmptyDesc")}</div>
+                <div className="sb-empty-desc">
+                  {fileScope === "drive" ? t("detail.driveEmptyDesc") : t("detail.filesEmptyDesc")}
+                </div>
               </div>
             ) : (
               <div className="sb-card overflow-hidden">
@@ -1031,7 +1063,11 @@ export function BotDetailPanel({
                         setFilePath(file.path);
                         return;
                       }
-                      window.open(api.botFileURL(bot!.id, file.path), "_blank", "noopener,noreferrer");
+                      window.open(
+                        fileScope === "drive" ? api.driveFileURL(file.path) : api.botFileURL(bot!.id, file.path),
+                        "_blank",
+                        "noopener,noreferrer",
+                      );
                     }}
                   >
                     {file.is_dir ? (
@@ -1069,9 +1105,8 @@ export function BotDetailPanel({
                       <div className="text-[12px] leading-[16px] text-[var(--sb-text-2)]">
                         {bot.computer_profile === "none"
                           ? t("detail.notEnabled")
-                          : bot.computer_profile === "desktop"
-                            ? "桌面会话 · 持久保留"
-                            : "浏览器会话 · 持久保留"}
+                          : `${bot.computer_profile === "desktop" ? t("detail.profileDesktopLabel") : t("detail.profileBrowserLabel")} · ${t(`detail.computerState.${computerState}`)}`}
+                        {computerDisk > 0 && ` · ${t("detail.diskUsed", { size: formatBytes(computerDisk) })}`}
                       </div>
                     </div>
                   </div>
@@ -1411,13 +1446,14 @@ function activityKindLabel(kind: string): string {
   return "回复";
 }
 
-type ComputerState = "none" | "running" | "starting" | "asleep" | "error";
+type ComputerState = "none" | "preparing" | "running" | "starting" | "asleep" | "error";
 
 // useComputerState reads the computer's real state for the panel card. The
 // card used to say "asleep" for every bot with a computer, even while it was
 // running, which made the computer look broken.
-function useComputerState(bot: Bot | null | undefined): ComputerState {
+function useComputerState(bot: Bot | null | undefined): { state: ComputerState; diskBytes: number } {
   const [state, setState] = useState<ComputerState>("none");
+  const [diskBytes, setDiskBytes] = useState(0);
   const botId = bot?.id;
   const profile = bot?.computer_profile;
   useEffect(() => {
@@ -1430,7 +1466,12 @@ function useComputerState(bot: Bot | null | undefined): ComputerState {
       try {
         const { computer } = await api.getComputer(botId);
         if (cancelled) return;
+        setDiskBytes(computer.disk_bytes ?? 0);
+        const action = computer.last_action;
+        const provisioning =
+          action?.kind === "provision" && (action.status === "pending" || action.status === "running");
         if (!computer.profile || computer.profile === "none") setState("none");
+        else if (provisioning) setState("preparing");
         else if (computer.status === "running") setState("running");
         else if (computer.status === "error") setState("error");
         else if (computer.status === "starting" || computer.desired_state === "running") setState("starting");
@@ -1440,11 +1481,16 @@ function useComputerState(bot: Bot | null | undefined): ComputerState {
       }
     };
     void load();
-    const timer = window.setInterval(() => void load(), 15000);
+    let timer = window.setInterval(() => void load(), 2000);
+    const slowDown = window.setTimeout(() => {
+      window.clearInterval(timer);
+      timer = window.setInterval(() => void load(), 15000);
+    }, 10000);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
+      window.clearTimeout(slowDown);
     };
   }, [botId, profile]);
-  return state;
+  return { state, diskBytes };
 }

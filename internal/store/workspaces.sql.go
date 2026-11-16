@@ -7,6 +7,7 @@ package store
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -120,7 +121,7 @@ func (q *Queries) GetComputerSnapshot(ctx context.Context, arg GetComputerSnapsh
 }
 
 const getWorkspaceByBot = `-- name: GetWorkspaceByBot :one
-SELECT id, owner_id, bot_id, profile, desired_state, status, container_name, workspace_path, last_used_at, last_error, created_at, updated_at, vnc_addr, cdp_addr, account_id FROM workspaces WHERE bot_id = $1
+SELECT id, owner_id, bot_id, profile, desired_state, status, container_name, workspace_path, last_used_at, last_error, created_at, updated_at, vnc_addr, cdp_addr, account_id, disk_bytes, disk_measured_at FROM workspaces WHERE bot_id = $1
 `
 
 func (q *Queries) GetWorkspaceByBot(ctx context.Context, botID uuid.UUID) (Workspace, error) {
@@ -142,6 +143,8 @@ func (q *Queries) GetWorkspaceByBot(ctx context.Context, botID uuid.UUID) (Works
 		&i.VncAddr,
 		&i.CdpAddr,
 		&i.AccountID,
+		&i.DiskBytes,
+		&i.DiskMeasuredAt,
 	)
 	return i, err
 }
@@ -185,8 +188,41 @@ func (q *Queries) ListComputerSnapshots(ctx context.Context, arg ListComputerSna
 	return items, nil
 }
 
+const listRunningWorkspaces = `-- name: ListRunningWorkspaces :many
+SELECT bot_id, owner_id, COALESCE(last_used_at, updated_at)::timestamptz AS last_used
+FROM workspaces
+WHERE status = 'running'
+ORDER BY 3 ASC
+`
+
+type ListRunningWorkspacesRow struct {
+	BotID    uuid.UUID `json:"bot_id"`
+	OwnerID  uuid.UUID `json:"owner_id"`
+	LastUsed time.Time `json:"last_used"`
+}
+
+func (q *Queries) ListRunningWorkspaces(ctx context.Context) ([]ListRunningWorkspacesRow, error) {
+	rows, err := q.db.Query(ctx, listRunningWorkspaces)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRunningWorkspacesRow{}
+	for rows.Next() {
+		var i ListRunningWorkspacesRow
+		if err := rows.Scan(&i.BotID, &i.OwnerID, &i.LastUsed); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listWorkspacesForReconcile = `-- name: ListWorkspacesForReconcile :many
-SELECT id, owner_id, bot_id, profile, desired_state, status, container_name, workspace_path, last_used_at, last_error, created_at, updated_at, vnc_addr, cdp_addr, account_id FROM workspaces
+SELECT id, owner_id, bot_id, profile, desired_state, status, container_name, workspace_path, last_used_at, last_error, created_at, updated_at, vnc_addr, cdp_addr, account_id, disk_bytes, disk_measured_at FROM workspaces
 WHERE (desired_state = 'running' AND status IN ('stopped', 'error'))
    OR (desired_state = 'stopped' AND status = 'running')
 `
@@ -216,10 +252,41 @@ func (q *Queries) ListWorkspacesForReconcile(ctx context.Context) ([]Workspace, 
 			&i.VncAddr,
 			&i.CdpAddr,
 			&i.AccountID,
+			&i.DiskBytes,
+			&i.DiskMeasuredAt,
 		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listWorkspacesToMeasure = `-- name: ListWorkspacesToMeasure :many
+SELECT bot_id FROM workspaces
+WHERE disk_measured_at IS NULL
+   OR disk_measured_at < COALESCE(last_used_at, updated_at)
+   OR disk_measured_at < now() - interval '6 hours'
+ORDER BY disk_measured_at NULLS FIRST
+LIMIT $1
+`
+
+func (q *Queries) ListWorkspacesToMeasure(ctx context.Context, limit int32) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, listWorkspacesToMeasure, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var bot_id uuid.UUID
+		if err := rows.Scan(&bot_id); err != nil {
+			return nil, err
+		}
+		items = append(items, bot_id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -251,7 +318,7 @@ SET desired_state = 'stopped',
     cdp_addr = '',
     updated_at = now()
 WHERE bot_id = $1
-RETURNING id, owner_id, bot_id, profile, desired_state, status, container_name, workspace_path, last_used_at, last_error, created_at, updated_at, vnc_addr, cdp_addr, account_id
+RETURNING id, owner_id, bot_id, profile, desired_state, status, container_name, workspace_path, last_used_at, last_error, created_at, updated_at, vnc_addr, cdp_addr, account_id, disk_bytes, disk_measured_at
 `
 
 func (q *Queries) MarkWorkspaceStopped(ctx context.Context, botID uuid.UUID) (Workspace, error) {
@@ -273,8 +340,35 @@ func (q *Queries) MarkWorkspaceStopped(ctx context.Context, botID uuid.UUID) (Wo
 		&i.VncAddr,
 		&i.CdpAddr,
 		&i.AccountID,
+		&i.DiskBytes,
+		&i.DiskMeasuredAt,
 	)
 	return i, err
+}
+
+const recordWorkspaceProvisioned = `-- name: RecordWorkspaceProvisioned :exec
+INSERT INTO workspaces (owner_id, bot_id, profile, desired_state, status, container_name, workspace_path, last_error)
+VALUES ($1, $2, $3, 'stopped', 'stopped', $4, $5, '')
+ON CONFLICT (bot_id) DO NOTHING
+`
+
+type RecordWorkspaceProvisionedParams struct {
+	OwnerID       uuid.UUID `json:"owner_id"`
+	BotID         uuid.UUID `json:"bot_id"`
+	Profile       string    `json:"profile"`
+	ContainerName string    `json:"container_name"`
+	WorkspacePath string    `json:"workspace_path"`
+}
+
+func (q *Queries) RecordWorkspaceProvisioned(ctx context.Context, arg RecordWorkspaceProvisionedParams) error {
+	_, err := q.db.Exec(ctx, recordWorkspaceProvisioned,
+		arg.OwnerID,
+		arg.BotID,
+		arg.Profile,
+		arg.ContainerName,
+		arg.WorkspacePath,
+	)
+	return err
 }
 
 const setWorkspaceDesiredState = `-- name: SetWorkspaceDesiredState :one
@@ -282,7 +376,7 @@ INSERT INTO workspaces (owner_id, bot_id, profile, desired_state, status, worksp
 VALUES ($1, $2, $3, $4, 'stopped', '', '')
 ON CONFLICT (bot_id)
 DO UPDATE SET desired_state = EXCLUDED.desired_state
-RETURNING id, owner_id, bot_id, profile, desired_state, status, container_name, workspace_path, last_used_at, last_error, created_at, updated_at, vnc_addr, cdp_addr, account_id
+RETURNING id, owner_id, bot_id, profile, desired_state, status, container_name, workspace_path, last_used_at, last_error, created_at, updated_at, vnc_addr, cdp_addr, account_id, disk_bytes, disk_measured_at
 `
 
 type SetWorkspaceDesiredStateParams struct {
@@ -316,8 +410,24 @@ func (q *Queries) SetWorkspaceDesiredState(ctx context.Context, arg SetWorkspace
 		&i.VncAddr,
 		&i.CdpAddr,
 		&i.AccountID,
+		&i.DiskBytes,
+		&i.DiskMeasuredAt,
 	)
 	return i, err
+}
+
+const setWorkspaceDiskUsage = `-- name: SetWorkspaceDiskUsage :exec
+UPDATE workspaces SET disk_bytes = $2, disk_measured_at = now() WHERE bot_id = $1
+`
+
+type SetWorkspaceDiskUsageParams struct {
+	BotID     uuid.UUID `json:"bot_id"`
+	DiskBytes int64     `json:"disk_bytes"`
+}
+
+func (q *Queries) SetWorkspaceDiskUsage(ctx context.Context, arg SetWorkspaceDiskUsageParams) error {
+	_, err := q.db.Exec(ctx, setWorkspaceDiskUsage, arg.BotID, arg.DiskBytes)
+	return err
 }
 
 const stopIdleWorkspaces = `-- name: StopIdleWorkspaces :execrows
@@ -355,7 +465,7 @@ DO UPDATE SET
     cdp_addr = EXCLUDED.cdp_addr,
     last_used_at = now(),
     last_error = ''
-RETURNING id, owner_id, bot_id, profile, desired_state, status, container_name, workspace_path, last_used_at, last_error, created_at, updated_at, vnc_addr, cdp_addr, account_id
+RETURNING id, owner_id, bot_id, profile, desired_state, status, container_name, workspace_path, last_used_at, last_error, created_at, updated_at, vnc_addr, cdp_addr, account_id, disk_bytes, disk_measured_at
 `
 
 type UpsertWorkspaceRunningParams struct {
@@ -395,6 +505,8 @@ func (q *Queries) UpsertWorkspaceRunning(ctx context.Context, arg UpsertWorkspac
 		&i.VncAddr,
 		&i.CdpAddr,
 		&i.AccountID,
+		&i.DiskBytes,
+		&i.DiskMeasuredAt,
 	)
 	return i, err
 }

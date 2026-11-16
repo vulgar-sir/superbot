@@ -255,6 +255,10 @@ func (s *Server) handleUpdateBot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
+	if req.ComputerProfile == "" {
+		// An update that does not mention the computer keeps it as it is.
+		req.ComputerProfile = existing.ComputerProfile
+	}
 	if err := s.validateBotRequest(r, accountID, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
@@ -463,6 +467,16 @@ func (s *Server) handleDeleteBot(w http.ResponseWriter, r *http.Request) {
 	writeNoContent(w)
 }
 
+// computerProfileOrDefault gives every bot a computer: a request without a
+// profile, or asking for none (bots used to be created without one), gets a
+// browser computer.
+func computerProfileOrDefault(profile string) string {
+	if profile == "" || profile == "none" {
+		return "browser"
+	}
+	return profile
+}
+
 func (s *Server) validateBotRequest(r *http.Request, userID uuid.UUID, req *botRequest) error {
 	req.Name = strings.TrimSpace(req.Name)
 	req.Model = strings.TrimSpace(req.Model)
@@ -476,13 +490,11 @@ func (s *Server) validateBotRequest(r *http.Request, userID uuid.UUID, req *botR
 	if err := s.resolveBotModel(r.Context(), userID, req); err != nil {
 		return err
 	}
-	if req.ComputerProfile == "" {
-		req.ComputerProfile = "none"
-	}
+	req.ComputerProfile = computerProfileOrDefault(req.ComputerProfile)
 	switch req.ComputerProfile {
-	case "none", "browser", "desktop":
+	case "browser", "desktop":
 	default:
-		return errors.New("computer_profile must be none, browser or desktop")
+		return errors.New("computer_profile must be browser or desktop")
 	}
 	if req.ProviderID != nil {
 		if _, err := s.db.GetProvider(r.Context(), store.GetProviderParams{ID: *req.ProviderID, OwnerID: userID}); err != nil {

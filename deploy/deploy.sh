@@ -15,3 +15,8 @@ docker build -t superbot/computer-desktop:latest -f deploy/images/computer/Docke
 bash deploy/harden-data-permissions.sh "$(pwd)/data"
 docker compose --env-file .env -f deploy/docker-compose.yml up -d
 docker compose --env-file .env -f deploy/docker-compose.yml ps
+# Keep Docker's disk in check: drop dangling images left by rebuilds and
+# build cache older than a week (bot computers share one image, so this
+# never touches their files).
+docker image prune -f >/dev/null
+docker builder prune -f --filter until=168h >/dev/null

@@ -52,7 +52,6 @@ async function createBot(request: APIRequestContext, name: string, prompt = "你
       provider_id: providerId,
       model,
       memory_enabled: false,
-      computer_profile: "none",
     },
   });
   expect(response.ok(), await response.text()).toBeTruthy();
@@ -245,7 +244,7 @@ test.describe("runtime features in the browser", () => {
     }
   });
 
-  test("bot computer can be enabled and watched from its card", async ({ page }) => {
+  test("a new bot comes with its own computer on standby", async ({ page }) => {
     test.setTimeout(180_000);
     await login(page);
     const bot = await createBot(page.request, "电脑");
@@ -253,11 +252,21 @@ test.describe("runtime features in the browser", () => {
       const created = await page.request.post("/api/conversations", { data: { kind: "direct", bot_id: bot.id } });
       const conv = (await created.json()).conversation.id as string;
       await page.goto(`/?conv=${conv}`);
+      // The computer is created with the bot but not started.
+      const readComputer = async () => (await (await page.request.get(`/api/bots/${bot.id}/computer`)).json()).computer;
+      const first = await readComputer();
+      expect(first.last_action?.kind).toBe("provision");
+      await expect
+        .poll(async () => (await readComputer()).last_action?.status, { timeout: 30_000 })
+        .toBe("done");
+      const standby = await readComputer();
+      expect(standby.profile).toBe("browser");
+      expect(standby.status).toBe("stopped");
       const card = page.locator("button", { hasText: /^Bot 的电脑/ });
-      await expect(card).toContainText("未启用", { timeout: 20_000 });
+      await expect(card).toContainText("待机中", { timeout: 15_000 });
       await card.click();
-      await expect(page.getByText("这个 Bot 还没有电脑")).toBeVisible();
-      await page.getByRole("button", { name: "启用浏览器电脑", exact: true }).click();
+      await expect(page.getByText("电脑在待机")).toBeVisible();
+      await page.getByRole("button", { name: "启动电脑", exact: true }).click();
       // The live view appears once the computer is up.
       await expect(page.locator('iframe[title="Bot computer live view"]')).toBeVisible({ timeout: 120_000 });
       await page.screenshot({ path: path.join(shotsDir, "computer-live.png") });
@@ -265,9 +274,18 @@ test.describe("runtime features in the browser", () => {
       expect(computer.profile).toBe("browser");
       expect(computer.status).toBe("running");
       await page.keyboard.press("Escape");
-      await page.locator("button[aria-label]").filter({ has: page.locator("svg") }).first().waitFor();
       await page.goto(`/?conv=${conv}`);
       await expect(page.locator("button", { hasText: /^Bot 的电脑/ })).toContainText("运行中", { timeout: 30_000 });
+
+      // The files tab switches between the bot's workspace and the shared drive.
+      await page.locator("button.sb-tab", { hasText: "文件" }).click();
+      await expect(page.getByText("这个 Bot 的私有工作区")).toBeVisible();
+      await page.getByRole("tab", { name: "共享盘" }).click();
+      await expect(page.getByRole("tab", { name: "共享盘" })).toHaveAttribute("aria-selected", "true");
+      await expect(page.getByText("同一账户下所有 Bot 共用的盘")).toBeVisible();
+      await expect(page.locator(".animate-spin")).toHaveCount(0, { timeout: 15_000 });
+      await page.waitForTimeout(300); // let the pill colour transition finish
+      await page.screenshot({ path: path.join(shotsDir, "shared-drive.png") });
     } finally {
       await page.request.post(`/api/bots/${bot.id}/computer/stop`, { data: {} });
       await page.request.delete(`/api/bots/${bot.id}`, { data: {} });

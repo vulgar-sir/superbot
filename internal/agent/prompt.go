@@ -31,6 +31,10 @@ func BuildSystemPrompt(bot store.Bot, workspace, sharedContainerPath, sharedHost
 		b.WriteString("- 交付物、代码、设计文档请写入共享目录（shared_* 工具或 shell），否则队友看不到。\n")
 		b.WriteString("- workspace_* 只属于你自己；shared_* 对所有团队成员可见。\n")
 	}
+	b.WriteString("\n## 共享盘\n")
+	b.WriteString("同一账户下的所有 Bot 共用一块共享盘：在电脑里是 /shared，用 drive_list / drive_read / drive_write / drive_search 也能直接读写。\n")
+	b.WriteString("- 要留给其他 Bot 或以后继续用的文件（资料、报告、代码、下载的内容）放进共享盘，并告诉对方路径。\n")
+	b.WriteString("- 私有工作区（/workspace、workspace_*）只有你自己能看到，适合放草稿和中间文件。\n")
 	b.WriteString(computerSection(bot.ComputerProfile))
 	if len(toolNames) > 0 {
 		b.WriteString("\n可用工具：")

@@ -40,6 +40,12 @@ func NewSharedTools(root *os.Root) *WorkspaceTools {
 	return &WorkspaceTools{root: root, prefix: "shared_", scope: "team shared directory (visible to every member of the team)"}
 }
 
+// NewDriveTools exposes the account's shared drive, which every bot of the
+// account reads and writes.
+func NewDriveTools(root *os.Root) *WorkspaceTools {
+	return &WorkspaceTools{root: root, prefix: "drive_", scope: "account shared drive (shared by every bot of this account, mounted at /shared in the computer)"}
+}
+
 func (w *WorkspaceTools) All() []Tool {
 	return []Tool{
 		&listTool{root: w.root, prefix: w.prefix, scope: w.scope},

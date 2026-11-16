@@ -27,6 +27,7 @@ from pathlib import Path
 
 BASE = os.environ.get("SUPERBOT_ACCEPT_BASE", "http://127.0.0.1:32608")
 ENV_FILE = Path(os.environ.get("SUPERBOT_ACCEPT_ENV", "/srv/superbot/.env"))
+DATA_DIR = Path(os.environ.get("SUPERBOT_ACCEPT_DATA", "/srv/superbot/data"))
 PREFIX = "验收-"
 TAG = uuid.uuid4().hex[:6]
 
@@ -113,7 +114,7 @@ class World:
         print(f"provider={llm[0]['name']} kind={llm[0]['kind']} model={self.model} "
               f"auto_review={permissions.get('auto_review')}")
 
-    def bot(self, name, prompt="", model=None, memory=False, profile="none"):
+    def bot(self, name, prompt="", model=None, memory=False, profile="browser"):
         _, data = call("POST", "/api/bots", {
             "name": f"{PREFIX}{name}-{TAG}", "slug": f"accept-{TAG}-{uuid.uuid4().hex[:6]}",
             "system_prompt": prompt, "provider_id": self.provider_id,
@@ -538,26 +539,100 @@ def scenario_browser(world):
     return evidence
 
 
-def scenario_browser_on_demand(world):
-    """A bot without a computer asked to use the browser enables one and browses."""
-    bot = world.bot("百度", "")
+def container_state(bot_id):
+    """Running flag and profile label of a bot's computer, or None if it has none."""
+    name = "superbot-bot-" + bot_id.replace("-", "")[:12]
+    result = subprocess.run(["docker", "inspect", name, "--format",
+                             "{{.State.Running}} {{index .Config.Labels \"superbot.profile\"}}"],
+                            capture_output=True, text=True, timeout=30)
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def scenario_computer_lifecycle(world):
+    """Creating a bot creates its computer (on standby); deleting it removes everything."""
+    started = time.time()
+    _, data = call("POST", "/api/bots", {
+        "name": f"{PREFIX}电脑-{TAG}", "slug": f"accept-{TAG}-life",
+        "provider_id": world.provider_id, "model": world.model,
+    })
+    bot = data["bot"]
+    world.bots.append(bot["id"])
+    created = wait(lambda: container_state(bot["id"]), 30, step=1, what="the new bot's computer")
+    created_after = round(time.time() - started, 1)
+    _, computer = call("GET", f"/api/bots/{bot['id']}/computer")
+    # A plain chat turn must not boot the computer: the browser tools start it
+    # on first use only.
     conv = world.direct(bot)
-    send(conv, "使用浏览器打开百度，搜索今天的新闻")
-    wait_idle(conv, 360)
-    texts = bot_texts(conv)
+    send(conv, "你好，只回复 OK 两个字母。")
+    wait_idle(conv, 120)
+    after_chat = container_state(bot["id"])
+    workspace = DATA_DIR / "workspaces" / bot["id"]
+    had_workspace = workspace.is_dir()
+    # Leave something behind in the workspace and a snapshot directory, as a
+    # bot that has been used would.
+    (workspace / "notes").mkdir(exist_ok=True)
+    (workspace / "notes" / "todo.txt").write_text("x" * 4096)
+    snapshots = DATA_DIR / "snapshots" / bot["id"]
+    snapshots.mkdir(parents=True, exist_ok=True)
+    (snapshots / "1.tar.gz").write_bytes(b"x" * 1024)
+    # Bots and the worker write as uid 1000; so must this stand-in.
+    for item in (workspace / "notes", workspace / "notes" / "todo.txt", snapshots, snapshots / "1.tar.gz"):
+        os.chown(item, 1000, 1000)
+
+    deleted_at = time.time()
+    call("DELETE", f"/api/bots/{bot['id']}", {})
+    world.bots.remove(bot["id"])
+
+    def gone():
+        return (container_state(bot["id"]) is None and not workspace.exists() and not snapshots.exists()
+                and sql(f"select count(*) from computer_removals where bot_id = '{bot['id']}'")[0][0] == "0")
+
+    try:
+        wait(gone, 30, step=1, what="the deleted bot's computer to be removed")
+    finally:
+        evidence = (f"profile={bot['computer_profile']} container_after_create={created!r} in={created_after}s "
+                    f"after_plain_chat={after_chat!r} "
+                    f"api_status={computer['computer']['status']} workspace_dir={had_workspace} "
+                    f"after_delete: container={container_state(bot['id'])!r} workspace_exists={workspace.exists()} "
+                    f"snapshots_exist={snapshots.exists()} removed_in={round(time.time() - deleted_at, 1)}s")
+        print("    " + evidence)
+    assert bot["computer_profile"] == "browser", "a new bot must get a computer: " + evidence
+    assert created.startswith("false browser"), "the computer must be created on standby, not running: " + evidence
+    assert computer["computer"]["status"] == "stopped", evidence
+    assert after_chat.startswith("false"), "a plain chat turn booted the computer: " + evidence
+    assert had_workspace, evidence
+    return evidence
+
+
+def scenario_shared_drive(world):
+    """A file one bot puts on the shared drive is readable by another bot and in the UI listing."""
+    writer = world.bot("写盘", "你是工程助手。用户让你运行命令时直接用 shell 工具运行，然后原样报告输出。")
+    reader = world.bot("读盘", "你是助手。按用户要求用工具读取文件并如实报告内容。")
+    filename = f"accept-{TAG}.txt"
+    secret = f"DRIVE-{TAG}-OK"
+    conv_w = world.direct(writer)
+    send(conv_w, f"请用 shell 工具运行：echo {secret} > /shared/{filename} && ls -l /shared/{filename} ，然后贴出输出。")
+    wait_idle(conv_w, 300)
+    conv_r = world.direct(reader)
+    send(conv_r, f"请用 drive_read 工具读取共享盘上的文件 {filename}，把文件内容原样告诉我。")
+    wait_idle(conv_r, 240)
+    texts = bot_texts(conv_r)
     tools = sql(f"select ti.name, ti.status from tool_invocations ti join runs r on r.id = ti.run_id "
-                f"where r.conversation_id = '{conv}' order by ti.created_at")
-    profile = sql(f"select computer_profile from bots where id = '{bot['id']}'")[0][0]
-    names = [name for name, _ in tools]
-    container = "superbot-bot-" + bot["id"].replace("-", "")[:12]
-    subprocess.run(["docker", "rm", "-f", container], capture_output=True, timeout=60)
-    evidence = (f"profile={profile} tool_calls={len(tools)} tools={names} "
-                f"last={texts[-1][-160:] if texts else ''!r}")
-    assert ("computer_enable", "done") in [tuple(t) for t in tools], "the bot never enabled its browser: " + evidence
-    assert profile == "browser", evidence
-    assert any(name == "browser_open" for name in names), "no browser_open call: " + evidence
-    probing = [name for name in names if name in ("shell", "python")]
-    assert len(probing) <= 2, "the bot still probed the offline sandbox: " + evidence
+                f"where r.conversation_id = '{conv_r}' order by ti.created_at")
+    _, listing = call("GET", "/api/drive/files")
+    names = [f["name"] for f in listing["files"]]
+    status, content = None, None
+    request = urllib.request.Request(BASE + f"/api/drive/files/content?path={filename}", headers={"Origin": BASE})
+    with opener.open(request, timeout=30) as response:
+        status, content = response.status, response.read().decode().strip()
+    for drive in (DATA_DIR / "shared").glob(f"*/{filename}"):
+        drive.unlink()
+    evidence = (f"reader_tools={tools} listed={filename in names} content_http={status} content={content!r} "
+                f"reader_last={texts[-1][-80:] if texts else ''!r}")
+    assert filename in names, "the drive listing does not show the file: " + evidence
+    assert content == secret, evidence
+    assert any(name == "drive_read" and st == "done" for name, st in tools), "the second bot did not read the drive: " + evidence
+    assert texts and secret in texts[-1], "the second bot did not see the first bot's file: " + evidence
     return evidence
 
 
@@ -587,7 +662,8 @@ SCENARIOS = {
     "sandbox": scenario_sandbox_mounts,
     "proxy": scenario_docker_proxy,
     "browser": scenario_browser,
-    "browser_on_demand": scenario_browser_on_demand,
+    "lifecycle": scenario_computer_lifecycle,
+    "drive": scenario_shared_drive,
     "skill": scenario_builtin_skill,
 }
 

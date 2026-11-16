@@ -112,9 +112,7 @@ func (s *Server) handleImportBotTemplate(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "invalid_template", err.Error())
 		return
 	}
-	if botReq.ComputerProfile == "" {
-		botReq.ComputerProfile = "none"
-	}
+	botReq.ComputerProfile = computerProfileOrDefault(botReq.ComputerProfile)
 	bot, err := s.db.CreateBot(r.Context(), store.CreateBotParams{
 		OwnerID: accountID, Name: name, Slug: slugify(name), Avatar: "",
 		Description: profile.Description, SystemPrompt: profile.SystemPrompt,

@@ -229,6 +229,8 @@ func (s *Server) Handler() http.Handler {
 			r.Route("/memories", s.userMemoryRoutes)
 			r.Route("/permissions", s.permissionRoutes)
 			r.Route("/tool-approvals", s.approvalRoutes)
+			r.Get("/drive/files", s.handleListDriveFiles)
+			r.Get("/drive/files/content", s.handleDriveFileContent)
 			r.Route("/attachments", s.attachmentRoutes)
 			r.Route("/runs", s.runRoutes)
 		})

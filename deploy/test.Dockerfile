@@ -11,4 +11,4 @@ COPY internal ./internal
 COPY migrations ./migrations
 COPY queries ./queries
 RUN go build ./... && go vet ./...
-CMD ["sh", "-c", "go test ./... && go test -tags integration -run Integration -count=1 -v ./internal/agent/... ./internal/sandbox/..."]
+CMD ["sh", "-c", "go test ./... && go test -tags integration -run Integration -count=1 -v ./internal/agent/... ./internal/sandbox/... ./internal/store/..."]

@@ -16,16 +16,21 @@ set -euo pipefail
 data="${1:-/srv/superbot/data}"
 cd "$data"
 
-links=$(find . -maxdepth 3 -type l \( -path './workspaces/*' -o -path './teams/*' \) | head -5)
+links=$(find . -maxdepth 3 -type l \( -path './workspaces/*' -o -path './teams/*' -o -path './shared/*' \) | head -5)
 if [[ -n "$links" ]]; then
   echo "refusing: symlinks found where sandbox mounts come from:" >&2
   echo "$links" >&2
   exit 1
 fi
 
-mkdir -p workspaces teams avatars library snapshots skills devices
-chown root:root . workspaces teams
-chmod 0755 . workspaces teams
+mkdir -p workspaces teams shared avatars library snapshots skills devices
+chown root:root . workspaces teams shared
+chmod 0755 . workspaces teams shared
+for drive in shared/*/; do
+  [[ -d "$drive" ]] || continue
+  chown -R 1000:1000 "$drive"
+  chmod 0777 "$drive"
+done
 for team in teams/*/; do
   [[ -d "$team" ]] || continue
   chown root:root "$team"
@@ -42,7 +47,7 @@ done
 for entry in * .[!.]*; do
   [[ -e "$entry" ]] || continue
   case "$entry" in
-    workspaces|teams) ;;
+    workspaces|teams|shared) ;;
     *) chown -R 1000:1000 "$entry" ;;
   esac
 done

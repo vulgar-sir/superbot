@@ -102,11 +102,14 @@ func New(cfg Config, logger *slog.Logger) (*Proxy, error) {
 // ServeHTTP checks the request against the allowlist and forwards it.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == dirsPath {
-		if r.Method != http.MethodPost {
-			writeError(w, http.StatusMethodNotAllowed, "superbot docker proxy: POST only")
-			return
+		switch r.Method {
+		case http.MethodPost:
+			p.handleDirs(w, r)
+		case http.MethodDelete:
+			p.handleRemoveDirs(w, r)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "superbot docker proxy: POST or DELETE only")
 		}
-		p.handleDirs(w, r)
 		return
 	}
 	rt, err := p.authorize(r)

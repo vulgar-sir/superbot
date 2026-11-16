@@ -15,13 +15,18 @@ import (
 )
 
 // The only host directories a sandbox may mount, relative to the bind root:
-// a bot's workspace and a team's shared folder.
+// a bot's workspace, a team's shared folder and the account's shared drive.
 var allowedSources = []*regexp.Regexp{
 	regexp.MustCompile(`^/workspaces/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`),
 	regexp.MustCompile(`^/teams/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/shared$`),
+	regexp.MustCompile(`^/shared/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`),
 }
 
 const dirsPath = "/superbot/dirs"
+
+// removableSource is the only directory shape the worker may ask to remove:
+// the workspace of a deleted bot, once it has emptied it.
+var removableSource = regexp.MustCompile(`^/workspaces/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 func (p *policy) allowedSource(src string) bool {
 	rel := strings.TrimPrefix(src, p.bindRoot)
@@ -100,6 +105,53 @@ func (p *Proxy) handleDirs(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]int{"created": created})
+}
+
+// handleRemoveDirs removes empty workspace directories of deleted bots. The
+// worker empties them itself (it owns the contents) but cannot remove the
+// directory from its root-owned parent. Only empty directories go: os.Remove
+// refuses anything else, so this cannot delete a bot's files.
+func (p *Proxy) handleRemoveDirs(w http.ResponseWriter, r *http.Request) {
+	if !p.policy.verifyPaths {
+		writeError(w, http.StatusServiceUnavailable, "superbot docker proxy: the data directory is not mounted in the proxy")
+		return
+	}
+	var req struct {
+		Paths []string `json:"paths"`
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<10))
+	if err != nil || json.Unmarshal(body, &req) != nil || len(req.Paths) == 0 || len(req.Paths) > 64 {
+		writeError(w, http.StatusBadRequest, "superbot docker proxy: expected {\"paths\": [...]}")
+		return
+	}
+	removed := 0
+	for _, src := range req.Paths {
+		rel := strings.TrimPrefix(src, p.policy.bindRoot)
+		if path.Clean(src) != src || !strings.HasPrefix(src, p.policy.bindRoot+"/") || !removableSource.MatchString(rel) {
+			p.logger.Warn("docker proxy refused to remove directory", "path", src)
+			writeError(w, http.StatusForbidden, fmt.Sprintf("superbot docker proxy: %q is not a workspace directory", src))
+			return
+		}
+		info, err := os.Lstat(src)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "superbot docker proxy: "+err.Error())
+			return
+		}
+		if !info.IsDir() || info.Mode()&fs.ModeSymlink != 0 {
+			writeError(w, http.StatusForbidden, fmt.Sprintf("superbot docker proxy: %q is not a plain directory", src))
+			return
+		}
+		if err := os.Remove(src); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			writeError(w, http.StatusConflict, "superbot docker proxy: "+err.Error())
+			return
+		}
+		removed++
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]int{"removed": removed})
 }
 
 // makeSourceDir creates the missing components of src. Intermediate

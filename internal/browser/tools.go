@@ -316,3 +316,34 @@ func truncateText(value string, limit int) string {
 	}
 	return string(runes[:limit]) + "…"
 }
+
+// LazyTools returns the browser tools without starting the computer: the
+// first browser call opens the session (booting the computer if it is on
+// standby). Every bot has a computer, and most turns never browse, so a turn
+// must not boot one just to offer the tools.
+func LazyTools(open func(ctx context.Context) (*Session, error)) []tools.Tool {
+	described := Tools(nil) // Name, Description and Parameters do not touch the session
+	lazy := make([]tools.Tool, len(described))
+	for index, tool := range described {
+		lazy[index] = &lazyTool{described: tool, index: index, open: open}
+	}
+	return lazy
+}
+
+type lazyTool struct {
+	described tools.Tool
+	index     int
+	open      func(ctx context.Context) (*Session, error)
+}
+
+func (t *lazyTool) Name() string                { return t.described.Name() }
+func (t *lazyTool) Description() string         { return t.described.Description() }
+func (t *lazyTool) Parameters() json.RawMessage { return t.described.Parameters() }
+
+func (t *lazyTool) Execute(ctx context.Context, raw json.RawMessage) (tools.Result, error) {
+	session, err := t.open(ctx)
+	if err != nil {
+		return tools.Result{}, fmt.Errorf("start the computer's browser: %w", err)
+	}
+	return Tools(session)[t.index].Execute(ctx, raw)
+}

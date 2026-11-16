@@ -66,6 +66,9 @@ type Manager struct {
 
 	orphanMu        sync.Mutex
 	lastOrphanSweep time.Time
+
+	// maxRunning caps how many computers run at once (0: no cap).
+	maxRunning int
 }
 
 func New(cfg config.Config, db *store.DB, logger *slog.Logger) (*Manager, error) {
@@ -95,6 +98,7 @@ func New(cfg config.Config, db *store.DB, logger *slog.Logger) (*Manager, error)
 		desktopImage:   desktopImage,
 		hostAlias:      hostAlias,
 		sandboxNetwork: sandboxNetwork,
+		maxRunning:     maxRunningComputers(),
 	}, nil
 }
 
@@ -105,6 +109,12 @@ func (m *Manager) Close() error {
 func (m *Manager) Ping(ctx context.Context) error {
 	_, err := m.cli.Ping(ctx, client.PingOptions{})
 	return err
+}
+
+// DrivePath is the account's shared drive on the host, mounted at /shared
+// in every computer of the account.
+func (m *Manager) DrivePath(accountID uuid.UUID) string {
+	return filepath.Join(m.cfg.DataDir, "shared", accountID.String())
 }
 
 func (m *Manager) WorkspacePath(botID uuid.UUID) string {
@@ -131,10 +141,19 @@ func normalizeProfile(profile string) string {
 // Ensure returns a running sandbox for the bot. Browser/desktop profiles use
 // the full computer image with Chromium, noVNC and CDP.
 func (m *Manager) Ensure(ctx context.Context, ownerID, botID uuid.UUID, profile string) (Info, error) {
+	return m.ensure(ctx, ownerID, botID, profile, true)
+}
+
+// ensure creates the bot's container when it is missing and, with start,
+// starts it. Without start (Provision) an existing container is left alone.
+func (m *Manager) ensure(ctx context.Context, ownerID, botID uuid.UUID, profile string, start bool) (Info, error) {
 	profile = normalizeProfile(profile)
 	workspace := m.WorkspacePath(botID)
 	if err := m.EnsureDirs(ctx, workspace); err != nil {
 		return Info{}, fmt.Errorf("create workspace: %w", err)
+	}
+	if start {
+		m.makeRoom(ctx, botID)
 	}
 
 	unlock := m.botLocks.Lock(botID)
@@ -146,9 +165,18 @@ func (m *Manager) Ensure(ctx context.Context, ownerID, botID uuid.UUID, profile 
 	if err != nil {
 		return Info{}, err
 	}
+	drive := m.DrivePath(ownerID)
+	if err := m.EnsureDirs(ctx, drive); err != nil {
+		return Info{}, fmt.Errorf("create shared drive: %w", err)
+	}
+	teamMounts = append(teamMounts, filepath.ToSlash(drive)+":/shared")
 
 	name := containerName(botID)
 	if info, err := m.cli.ContainerInspect(ctx, name, client.ContainerInspectOptions{}); err == nil {
+		if !start {
+			m.recordProvisioned(ctx, ownerID, botID, profile, workspace, name)
+			return Info{Name: name, Profile: profile, Workspace: workspace}, nil
+		}
 		labels := info.Container.Config.Labels
 		existingProfile := normalizeProfile(labels["superbot.profile"])
 		if existingProfile != profile || labels[teamsLabelKey] != teamsLabel || labels[mountsVersionKey] != mountsVersion {
@@ -181,6 +209,14 @@ func (m *Manager) Ensure(ctx context.Context, ownerID, botID uuid.UUID, profile 
 		TeamMounts:     teamMounts,
 		TeamsLabel:     teamsLabel,
 	}.CreateOptions())
+	if err != nil && !start {
+		return Info{}, fmt.Errorf("create computer: %w", err)
+	}
+	if !start {
+		m.recordProvisioned(ctx, ownerID, botID, profile, workspace, name)
+		m.logger.Info("computer created", "bot_id", botID, "container", name, "profile", profile)
+		return Info{Name: name, Profile: profile, Workspace: workspace}, nil
+	}
 	if err != nil {
 		if info, inspectErr := m.cli.ContainerInspect(ctx, name, client.ContainerInspectOptions{}); inspectErr == nil {
 			if info.Container.State == nil || !info.Container.State.Running {
@@ -199,6 +235,19 @@ func (m *Manager) Ensure(ctx context.Context, ownerID, botID uuid.UUID, profile 
 	}
 	m.logger.Info("sandbox started", "bot_id", botID, "container", name, "profile", profile)
 	return m.infoFromInspect(ctx, ownerID, botID, profile, workspace, name, info.Container)
+}
+
+// recordProvisioned gives a newly created computer its workspace row, so the
+// computer view shows it as on standby rather than missing.
+func (m *Manager) recordProvisioned(ctx context.Context, ownerID, botID uuid.UUID, profile, workspace, name string) {
+	if m.db == nil {
+		return
+	}
+	if err := m.db.RecordWorkspaceProvisioned(ctx, store.RecordWorkspaceProvisionedParams{
+		OwnerID: ownerID, BotID: botID, Profile: profile, ContainerName: name, WorkspacePath: workspace,
+	}); err != nil {
+		m.logger.Warn("record provisioned computer failed", "bot_id", botID, "error", err)
+	}
 }
 
 // ContainerSpec holds what goes into a bot sandbox's create request.
@@ -308,7 +357,7 @@ const (
 	mountsVersionKey = "superbot.mounts"
 	// mountsVersion changes whenever the mount layout does, so containers
 	// created under an older layout are rebuilt once.
-	mountsVersion = "2"
+	mountsVersion = "3"
 )
 
 // teamMounts returns the bind mounts for the shared directories of the
@@ -542,6 +591,16 @@ func (m *Manager) ProcessActions(ctx context.Context) {
 			_ = m.db.MarkWorkspaceActionDone(ctx, action.ID)
 			continue
 		}
+		if action.Kind == "provision" {
+			if err := m.Provision(ctx, action.OwnerID, action.BotID, bot.ComputerProfile); err != nil {
+				_ = m.db.MarkWorkspaceActionFailed(ctx, store.MarkWorkspaceActionFailedParams{
+					ID: action.ID, Error: err.Error(),
+				})
+				continue
+			}
+			_ = m.db.MarkWorkspaceActionDone(ctx, action.ID)
+			continue
+		}
 		if action.Kind == "restore" {
 			if err := m.restoreWorkspace(ctx, action, bot); err != nil {
 				_ = m.db.MarkWorkspaceActionFailed(ctx, store.MarkWorkspaceActionFailedParams{
@@ -578,6 +637,7 @@ func (m *Manager) ProcessActions(ctx context.Context) {
 
 // Reconcile applies desired_state changes requested by the API.
 func (m *Manager) Reconcile(ctx context.Context) {
+	m.processRemovals(ctx)
 	m.ProcessActions(ctx)
 	m.removeOrphans(ctx)
 	// Put computers to sleep after 30 minutes without bot activity; a new

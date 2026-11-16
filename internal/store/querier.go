@@ -110,12 +110,14 @@ type Querier interface {
 	CreateWebAuthnCredential(ctx context.Context, arg CreateWebAuthnCredentialParams) (WebauthnCredential, error)
 	CreateWorkspaceAction(ctx context.Context, arg CreateWorkspaceActionParams) (WorkspaceAction, error)
 	CreateWorkspaceRestoreAction(ctx context.Context, arg CreateWorkspaceRestoreActionParams) (WorkspaceAction, error)
+	DeferComputerRemoval(ctx context.Context, arg DeferComputerRemovalParams) error
 	DeleteAgentConversationsForBot(ctx context.Context, botAID uuid.UUID) error
 	DeleteBot(ctx context.Context, arg DeleteBotParams) (int64, error)
 	DeleteBotMemory(ctx context.Context, arg DeleteBotMemoryParams) (int64, error)
 	DeleteBotRoutine(ctx context.Context, arg DeleteBotRoutineParams) (int64, error)
 	DeleteBotTemplate(ctx context.Context, arg DeleteBotTemplateParams) (int64, error)
 	DeleteCalendarEvent(ctx context.Context, arg DeleteCalendarEventParams) (int64, error)
+	DeleteComputerRemoval(ctx context.Context, botID uuid.UUID) error
 	DeleteComputerSnapshot(ctx context.Context, arg DeleteComputerSnapshotParams) (int64, error)
 	DeleteConnector(ctx context.Context, arg DeleteConnectorParams) (int64, error)
 	DeleteConversationForOwner(ctx context.Context, arg DeleteConversationForOwnerParams) (int64, error)
@@ -155,6 +157,7 @@ type Querier interface {
 	DisableBotRoutine(ctx context.Context, id uuid.UUID) (int64, error)
 	DisableRoutine(ctx context.Context, id uuid.UUID) (int64, error)
 	DiscardCheckpoint(ctx context.Context, id uuid.UUID) error
+	ExistingBotIDs(ctx context.Context, ids []uuid.UUID) ([]uuid.UUID, error)
 	ExpireToolApproval(ctx context.Context, id uuid.UUID) error
 	FailDeviceJob(ctx context.Context, arg FailDeviceJobParams) (int64, error)
 	// A worker that keeps dying mid-cycle must not be reclaimed forever.
@@ -280,6 +283,7 @@ type Querier interface {
 	ListDocumentVersions(ctx context.Context, arg ListDocumentVersionsParams) ([]DocumentVersion, error)
 	ListDocuments(ctx context.Context, ownerID uuid.UUID) ([]Document, error)
 	ListDueBotRoutines(ctx context.Context) ([]BotRoutine, error)
+	ListDueComputerRemovals(ctx context.Context, limit int32) ([]ComputerRemoval, error)
 	ListDueRoutines(ctx context.Context) ([]Routine, error)
 	ListEmailDrafts(ctx context.Context, arg ListEmailDraftsParams) ([]EmailDraft, error)
 	ListEmailTriggerRoutines(ctx context.Context) ([]BotRoutine, error)
@@ -320,6 +324,7 @@ type Querier interface {
 	ListRoutinesByOwner(ctx context.Context, ownerID uuid.UUID) ([]Routine, error)
 	ListRunEvents(ctx context.Context, runID *uuid.UUID) ([]Event, error)
 	ListRunningSubagentTasks(ctx context.Context) ([]SubagentTask, error)
+	ListRunningWorkspaces(ctx context.Context) ([]ListRunningWorkspacesRow, error)
 	ListRunsByCycle(ctx context.Context, cycleID uuid.UUID) ([]Run, error)
 	ListSideChats(ctx context.Context, arg ListSideChatsParams) ([]SideChat, error)
 	ListSidebarSections(ctx context.Context, ownerID uuid.UUID) ([]SidebarSection, error)
@@ -341,6 +346,7 @@ type Querier interface {
 	ListWebAuthnCredentials(ctx context.Context, userID uuid.UUID) ([]WebauthnCredential, error)
 	ListWorkspaceActionsForBot(ctx context.Context, arg ListWorkspaceActionsForBotParams) ([]WorkspaceAction, error)
 	ListWorkspacesForReconcile(ctx context.Context) ([]Workspace, error)
+	ListWorkspacesToMeasure(ctx context.Context, limit int32) ([]uuid.UUID, error)
 	LockCycleLease(ctx context.Context, arg LockCycleLeaseParams) (uuid.UUID, error)
 	MarkActivitiesRead(ctx context.Context, arg MarkActivitiesReadParams) error
 	MarkAllActivitiesRead(ctx context.Context, ownerID uuid.UUID) error
@@ -364,6 +370,7 @@ type Querier interface {
 	// the durable record. Keep the newest rows of every conversation regardless.
 	PruneDeltaEvents(ctx context.Context, arg PruneDeltaEventsParams) (int64, error)
 	RecordMemoryReviewFailure(ctx context.Context, conversationID uuid.UUID) error
+	RecordWorkspaceProvisioned(ctx context.Context, arg RecordWorkspaceProvisionedParams) error
 	RefreshMemory(ctx context.Context, arg RefreshMemoryParams) (Memory, error)
 	ReleaseConversationReservation(ctx context.Context, arg ReleaseConversationReservationParams) error
 	// Graceful shutdown hands the cycle back immediately and does not count the
@@ -433,6 +440,7 @@ type Querier interface {
 	SetUserAutoReview(ctx context.Context, arg SetUserAutoReviewParams) error
 	SetUserRole(ctx context.Context, arg SetUserRoleParams) error
 	SetWorkspaceDesiredState(ctx context.Context, arg SetWorkspaceDesiredStateParams) (Workspace, error)
+	SetWorkspaceDiskUsage(ctx context.Context, arg SetWorkspaceDiskUsageParams) error
 	SettleConversationUsage(ctx context.Context, arg SettleConversationUsageParams) error
 	SettleCycleUsage(ctx context.Context, arg SettleCycleUsageParams) error
 	SoftDeleteMessage(ctx context.Context, id uuid.UUID) (Message, error)

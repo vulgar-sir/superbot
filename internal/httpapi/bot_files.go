@@ -35,7 +35,12 @@ func (s *Server) handleListBotFiles(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "bot not found")
 		return
 	}
-	root, err := os.OpenRoot(s.botWorkspaceRoot(botID.String()))
+	listRootFiles(w, r, s.botWorkspaceRoot(botID.String()))
+}
+
+// listRootFiles lists one directory under rootPath, confined by os.Root.
+func listRootFiles(w http.ResponseWriter, r *http.Request, rootPath string) {
+	root, err := os.OpenRoot(rootPath)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"files": []botFileDTO{}, "path": ""})
 		return
@@ -83,7 +88,12 @@ func (s *Server) handleBotFileContent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "bot not found")
 		return
 	}
-	root, err := os.OpenRoot(s.botWorkspaceRoot(botID.String()))
+	serveRootFile(w, r, s.botWorkspaceRoot(botID.String()))
+}
+
+// serveRootFile streams one file under rootPath, confined by os.Root.
+func serveRootFile(w http.ResponseWriter, r *http.Request, rootPath string) {
+	root, err := os.OpenRoot(rootPath)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "not_found", "file not found")
 		return
@@ -120,4 +130,18 @@ func (s *Server) handleBotFileContent(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Disposition", `inline; filename="`+path.Base(relative)+`"`)
 	_, _ = io.Copy(w, file)
+}
+
+// driveRoot is the account's shared drive: one folder every bot of the
+// account sees at /shared in its computer.
+func (s *Server) driveRoot(accountID string) string {
+	return filepath.Join(s.cfg.DataDir, "shared", accountID)
+}
+
+func (s *Server) handleListDriveFiles(w http.ResponseWriter, r *http.Request) {
+	listRootFiles(w, r, s.driveRoot(accountFrom(r).String()))
+}
+
+func (s *Server) handleDriveFileContent(w http.ResponseWriter, r *http.Request) {
+	serveRootFile(w, r, s.driveRoot(accountFrom(r).String()))
 }

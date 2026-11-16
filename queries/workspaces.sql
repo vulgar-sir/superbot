@@ -78,3 +78,25 @@ WHERE id = $1 AND account_id = $2;
 INSERT INTO workspace_actions (owner_id, bot_id, kind, snapshot_id)
 VALUES ($1, $2, 'restore', $3)
 RETURNING *;
+
+-- name: RecordWorkspaceProvisioned :exec
+INSERT INTO workspaces (owner_id, bot_id, profile, desired_state, status, container_name, workspace_path, last_error)
+VALUES ($1, $2, $3, 'stopped', 'stopped', $4, $5, '')
+ON CONFLICT (bot_id) DO NOTHING;
+
+-- name: ListRunningWorkspaces :many
+SELECT bot_id, owner_id, COALESCE(last_used_at, updated_at)::timestamptz AS last_used
+FROM workspaces
+WHERE status = 'running'
+ORDER BY 3 ASC;
+
+-- name: ListWorkspacesToMeasure :many
+SELECT bot_id FROM workspaces
+WHERE disk_measured_at IS NULL
+   OR disk_measured_at < COALESCE(last_used_at, updated_at)
+   OR disk_measured_at < now() - interval '6 hours'
+ORDER BY disk_measured_at NULLS FIRST
+LIMIT $1;
+
+-- name: SetWorkspaceDiskUsage :exec
+UPDATE workspaces SET disk_bytes = $2, disk_measured_at = now() WHERE bot_id = $1;

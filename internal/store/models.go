@@ -228,6 +228,15 @@ type CalendarEvent struct {
 	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
+type ComputerRemoval struct {
+	BotID         uuid.UUID `json:"bot_id"`
+	OwnerID       uuid.UUID `json:"owner_id"`
+	RequestedAt   time.Time `json:"requested_at"`
+	Attempts      int32     `json:"attempts"`
+	LastError     string    `json:"last_error"`
+	NextAttemptAt time.Time `json:"next_attempt_at"`
+}
+
 type ComputerSnapshot struct {
 	ID          uuid.UUID `json:"id"`
 	AccountID   uuid.UUID `json:"account_id"`
@@ -935,21 +944,23 @@ type WebauthnSession struct {
 }
 
 type Workspace struct {
-	ID            uuid.UUID  `json:"id"`
-	OwnerID       uuid.UUID  `json:"owner_id"`
-	BotID         uuid.UUID  `json:"bot_id"`
-	Profile       string     `json:"profile"`
-	DesiredState  string     `json:"desired_state"`
-	Status        string     `json:"status"`
-	ContainerName string     `json:"container_name"`
-	WorkspacePath string     `json:"workspace_path"`
-	LastUsedAt    *time.Time `json:"last_used_at"`
-	LastError     string     `json:"last_error"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
-	VncAddr       string     `json:"vnc_addr"`
-	CdpAddr       string     `json:"cdp_addr"`
-	AccountID     *uuid.UUID `json:"account_id"`
+	ID             uuid.UUID  `json:"id"`
+	OwnerID        uuid.UUID  `json:"owner_id"`
+	BotID          uuid.UUID  `json:"bot_id"`
+	Profile        string     `json:"profile"`
+	DesiredState   string     `json:"desired_state"`
+	Status         string     `json:"status"`
+	ContainerName  string     `json:"container_name"`
+	WorkspacePath  string     `json:"workspace_path"`
+	LastUsedAt     *time.Time `json:"last_used_at"`
+	LastError      string     `json:"last_error"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	VncAddr        string     `json:"vnc_addr"`
+	CdpAddr        string     `json:"cdp_addr"`
+	AccountID      *uuid.UUID `json:"account_id"`
+	DiskBytes      int64      `json:"disk_bytes"`
+	DiskMeasuredAt *time.Time `json:"disk_measured_at"`
 }
 
 type WorkspaceAction struct {

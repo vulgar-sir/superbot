@@ -70,7 +70,7 @@ func (t *adminCreateAgentTool) Execute(ctx context.Context, raw json.RawMessage)
 		Capabilities:    json.RawMessage(`{}`),
 		ToolPolicy:      json.RawMessage(`{}`),
 		MemoryEnabled:   true,
-		ComputerProfile: "none",
+		ComputerProfile: "browser",
 		Title:           strings.TrimSpace(input.Title),
 		AvatarShape:     input.AvatarShape,
 		AvatarColor:     input.AvatarColor,

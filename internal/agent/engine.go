@@ -397,7 +397,24 @@ func (e *Engine) runBotTurnSeeded(ctx context.Context, conv store.Conversation, 
 		sharedContainerPath = "/teams/" + conv.TeamID.String() + "/shared"
 	}
 
+	// Every bot of the account shares one drive, mounted at /shared in its
+	// computer, so files can move between bots outside of group chats.
+	var driveRoot *os.Root
+	driveHostPath := filepath.Join(e.cfg.DataDir, "shared", bot.OwnerID.String())
+	if err := e.ensureDirs(ctx, driveHostPath); err != nil {
+		e.logger.Warn("prepare shared drive failed", "bot_id", bot.ID, "error", err)
+	} else if driveRoot, err = os.OpenRoot(driveHostPath); err != nil {
+		e.logger.Warn("open shared drive failed", "bot_id", bot.ID, "error", err)
+	} else {
+		defer driveRoot.Close()
+	}
+
 	registry, closeRegistry := e.buildRegistry(ctx, root, bot, sharedRoot, conv, cycle)
+	if driveRoot != nil {
+		for _, tool := range tools.NewDriveTools(driveRoot).All() {
+			registry.Register(tool)
+		}
+	}
 	defer closeRegistry()
 	// A reclaimed cycle continues from the last finished tool round instead
 	// of replaying tools that already ran. In a team cycle the checkpoint
@@ -880,14 +897,13 @@ func (e *Engine) buildRegistry(ctx context.Context, root *os.Root, bot store.Bot
 		registry.Register(&computerEnableTool{engine: e, bot: &own, registry: registry})
 	}
 	if (bot.ComputerProfile == "browser" || bot.ComputerProfile == "desktop") && e.sandbox != nil {
-		session, err := e.browserSession(ctx, bot)
-		if err != nil {
-			e.logger.Warn("start browser session failed", "bot_id", bot.ID, "error", err)
-		} else {
-			for _, tool := range browser.Tools(session) {
-				if !disabled[tool.Name()] {
-					registry.Register(tool)
-				}
+		// The computer boots on the first browser call, not with every turn:
+		// a plain chat must not wait for (or pay for) a running computer.
+		own := bot
+		open := func(ctx context.Context) (*browser.Session, error) { return e.browserSession(ctx, own) }
+		for _, tool := range browser.LazyTools(open) {
+			if !disabled[tool.Name()] {
+				registry.Register(tool)
 			}
 		}
 	}

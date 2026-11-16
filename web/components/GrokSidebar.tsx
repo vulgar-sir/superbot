@@ -399,7 +399,7 @@ export function GrokSidebar({
       }
       const ok = await confirm({
         title: `删除 ${bot.name}？`,
-        description: "该 Bot 的私聊、资料库、例程与记忆会一并删除。",
+        description: "该 Bot 的私聊、资料库、例程、记忆，以及它的电脑和电脑里的文件会一并删除；共享盘里的文件会保留。",
         confirmLabel: "删除",
         danger: true,
       });

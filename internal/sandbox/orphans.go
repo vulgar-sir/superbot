@@ -27,6 +27,8 @@ func (m *Manager) removeOrphans(ctx context.Context) int {
 	}
 	m.lastOrphanSweep = time.Now()
 	m.orphanMu.Unlock()
+	defer m.measureDisks(ctx)
+	defer m.removeLeftoverDirs(ctx)
 
 	listed, err := m.cli.ContainerList(ctx, client.ContainerListOptions{
 		All:     true,
@@ -46,20 +48,11 @@ func (m *Manager) removeOrphans(ctx context.Context) int {
 		if err != nil || exists {
 			continue
 		}
-		unlock := m.botLocks.Lock(botID)
-		timeout := 5
-		_, _ = m.cli.ContainerStop(ctx, item.ID, client.ContainerStopOptions{Timeout: &timeout})
-		_, err = m.cli.ContainerRemove(ctx, item.ID, client.ContainerRemoveOptions{Force: true})
-		if err == nil {
-			// The bot is gone, so are its files; the directory itself stays
-			// because its parent is not writable by the services.
-			_ = clearDir(m.WorkspacePath(botID))
-			removed++
-		}
-		unlock()
-		if err != nil {
+		if err := m.removeComputer(ctx, botID); err != nil {
 			m.logger.Warn("remove orphan computer failed", "bot_id", botID, "error", err)
+			continue
 		}
+		removed++
 	}
 	if removed > 0 {
 		m.logger.Info("removed computers of deleted bots", "count", removed)

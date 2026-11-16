@@ -61,7 +61,7 @@ export function RunPanel({
             <Metric
               icon={<Laptop className="h-3 w-3" />}
               label="电脑"
-              value={bot?.computer_profile && bot.computer_profile !== "none" ? bot.computer_profile : team ? "shared" : "none"}
+              value={team ? "shared" : bot?.computer_profile || "browser"}
             />
             <Metric icon={<Activity className="h-3 w-3" />} label="工具" value={String(toolCount)} />
             <Metric icon={<Coins className="h-3 w-3" />} label="总成本" value={formatCNY(conversation?.spent_micros ?? 0)} />

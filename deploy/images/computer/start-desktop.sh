@@ -22,11 +22,23 @@ sleep 3
 rm -f /workspace/.chromium/SingletonLock /workspace/.chromium/SingletonCookie \
       /workspace/.chromium/SingletonSocket
 
+# Logins, cookies and history persist in the profile on disk, but caches do
+# not: Chromium's caches go to the container's tmpfs, capped, so browsing
+# does not grow the bot's workspace. Caches an older profile left on disk
+# are dropped.
+rm -rf /workspace/.chromium/Default/Cache "/workspace/.chromium/Default/Code Cache" \
+       /workspace/.chromium/Default/GPUCache /workspace/.chromium/Default/DawnCache \
+       /workspace/.chromium/Default/DawnGraphiteCache /workspace/.chromium/Default/DawnWebGPUCache \
+       /workspace/.chromium/GrShaderCache /workspace/.chromium/ShaderCache \
+       /workspace/.chromium/GraphiteDawnCache
+
 chromium \
   --no-sandbox \
   --disable-dev-shm-usage \
   --disable-gpu \
   --user-data-dir=/workspace/.chromium \
+  --disk-cache-dir=/tmp/chromium-cache \
+  --disk-cache-size=104857600 \
   --remote-debugging-address=0.0.0.0 \
   --remote-debugging-port=9222 \
   --no-first-run \

@@ -238,13 +238,15 @@ export interface ComputerInfo {
   vnc_url: string;
   last_action?: {
     id: string;
-    kind: "update" | "reset";
+    kind: "update" | "reset" | "snapshot" | "restore" | "provision";
     status: "pending" | "running" | "done" | "failed";
     error: string;
     created_at: string;
     processed_at: string | null;
   } | null;
   updated_at: string;
+  disk_bytes?: number;
+  disk_measured_at?: string;
 }
 
 export interface UsageDaily {

@@ -753,6 +753,13 @@ export const api = {
   botFileURL(botId: string, path: string) {
     return `/api/bots/${botId}/files/content?path=${encodeURIComponent(path)}`;
   },
+  // The account's shared drive: one folder every bot sees at /shared.
+  listDriveFiles(path = "") {
+    return request<{ files: BotFileEntry[]; path: string }>(`/api/drive/files?path=${encodeURIComponent(path)}`);
+  },
+  driveFileURL(path: string) {
+    return `/api/drive/files/content?path=${encodeURIComponent(path)}`;
+  },
   listBotLibrary(botId: string) {
     return request<{ items: LibraryItem[] }>(`/api/bots/${botId}/library`);
   },

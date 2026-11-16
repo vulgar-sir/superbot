@@ -24,6 +24,10 @@ type computerDTO struct {
 	VNCURL     string              `json:"vnc_url"`
 	LastAction *workspaceActionDTO `json:"last_action,omitempty"`
 	UpdatedAt  time.Time           `json:"updated_at"`
+	// DiskBytes is the space the bot's workspace takes, measured by the
+	// worker every few minutes while the computer is in use.
+	DiskBytes      int64      `json:"disk_bytes"`
+	DiskMeasuredAt *time.Time `json:"disk_measured_at,omitempty"`
 }
 
 type workspaceActionDTO struct {
@@ -45,21 +49,21 @@ func (s *Server) handleGetComputer(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "bot not found")
 		return
 	}
+	var dto computerDTO
 	workspace, err := s.db.GetWorkspaceByBot(r.Context(), botID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeJSON(w, http.StatusOK, map[string]any{"computer": computerDTO{
-				BotID:   botID,
-				Profile: bot.ComputerProfile,
-				Status:  "stopped",
-				Desired: "stopped",
-			}})
-			return
-		}
+	switch {
+	case err == nil:
+		dto = s.computerDTO(botID, bot.ComputerProfile, workspace.Status, workspace.DesiredState, workspace.VncAddr, workspace.UpdatedAt)
+		dto.DiskBytes = workspace.DiskBytes
+		dto.DiskMeasuredAt = workspace.DiskMeasuredAt
+	case errors.Is(err, pgx.ErrNoRows):
+		// A brand-new bot: its computer is being created (the pending
+		// provision action below says so) and has no workspace row yet.
+		dto = computerDTO{BotID: botID, Profile: bot.ComputerProfile, Status: "stopped", Desired: "stopped"}
+	default:
 		writeError(w, http.StatusInternalServerError, "internal", "could not load workspace")
 		return
 	}
-	dto := s.computerDTO(botID, bot.ComputerProfile, workspace.Status, workspace.DesiredState, workspace.VncAddr, workspace.UpdatedAt)
 	if actions, err := s.db.ListWorkspaceActionsForBot(r.Context(), store.ListWorkspaceActionsForBotParams{
 		OwnerID: accountFrom(r), BotID: botID,
 	}); err == nil && len(actions) > 0 {

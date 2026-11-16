@@ -41,7 +41,7 @@ const emptyForm: FormState = {
   system_prompt: "",
   provider_id: "",
   model: "",
-  computer_profile: "none",
+  computer_profile: "browser",
   memory_enabled: true,
 };
 
@@ -153,7 +153,7 @@ export default function BotsPage() {
   const remove = useCallback(async (bot: Bot) => {
     const ok = await confirm({
       title: `删除 Bot「${bot.name}」？`,
-      description: "已有运行记录的 Bot 不能删除；其他 Bot 的私聊、资料库与例程会一并删除。",
+      description: "已有运行记录的 Bot 不能删除；其他 Bot 的私聊、资料库、例程，以及它的电脑和电脑里的文件会一并删除；共享盘里的文件会保留。",
       confirmLabel: "删除",
       danger: true,
     });
