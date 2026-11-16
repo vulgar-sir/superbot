@@ -1,13 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Check,
   Copy,
   CornerDownRight,
   FileText,
   Loader2,
-  MessagesSquare,
   Pencil,
   Pin,
   Reply,
@@ -17,6 +16,8 @@ import {
 } from "lucide-react";
 
 import { BotAvatar } from "./BotAvatar";
+import { AgentThreadGroup } from "./AgentThreadGroup";
+import { summarizeThread } from "@/lib/agentThreads";
 import { Markdown } from "./Markdown";
 import { Menu, type MenuItem } from "./ui/Menu";
 import { useToast } from "./ui/Toast";
@@ -175,12 +176,6 @@ export function ChatMessage({
     }
   };
 
-  const peer = useMemo(() => {
-    if (message.metadata?.kind !== "agent_thread") return undefined;
-    const peerID = String(message.metadata.peer_bot_id ?? "");
-    return bots.find((item) => item.id === peerID);
-  }, [message.metadata, bots]);
-
   if (message.sender_type === "system") {
     if (message.metadata?.kind === "context_checkpoint") {
       return <CheckpointDivider message={message} conversationId={conversationId} />;
@@ -192,45 +187,13 @@ export function ChatMessage({
       return <GoalNudgeDivider message={message} />;
     }
     if (message.metadata?.kind === "agent_thread") {
-      const threadID = String(message.metadata.thread_id ?? "");
-      const conversationID = String(message.metadata.conversation_id ?? "");
-      const peerName = String(message.metadata.peer_bot_name ?? "队友");
-      const direction = String(message.metadata.direction ?? "sent");
-      // A received reply flagged for injection is handed to the bot that
-      // started the thread, which then carries on by itself.
-      const handedOff = direction === "received" && message.metadata.inject === "true";
-      const handoffBot =
-        bots.find((item) => item.id === String(message.metadata.for_bot_id ?? "")) ?? bot;
       return (
-        <div className="flex flex-col items-center py-1" data-message-id={message.id}>
-          <button
-            type="button"
-            onClick={() => threadID && onOpenAgentThread?.(threadID, conversationID)}
-            className="sb-agent-card max-w-[520px] rounded-full px-3 hover:bg-[var(--sb-hover)]"
-          >
-            {peer ? (
-              <BotAvatar
-                name={peer.name}
-                id={peer.id}
-                size={18}
-                shape={peer.avatar_shape}
-                color={peer.avatar_color}
-                avatar={peer.avatar}
-              />
-            ) : (
-              <MessagesSquare className="h-3.5 w-3.5" />
-            )}
-            <span>
-              {direction === "received" ? "来自" : "已发消息给"} {peerName}
-            </span>
-            <CornerDownRight className="h-3 w-3 opacity-50" />
-          </button>
-          {handedOff && (
-            <div className="-mt-1 pb-1 text-center text-[11px] leading-[14px] text-[var(--sb-text-3)]">
-              {t("chat.agentThread.handoff", { bot: handoffBot?.name ?? t("chat.currentBot") })}
-            </div>
-          )}
-        </div>
+        <AgentThreadGroup
+          threads={[summarizeThread([message])]}
+          bots={bots}
+          bot={bot}
+          onOpenAgentThread={onOpenAgentThread}
+        />
       );
     }
     return (

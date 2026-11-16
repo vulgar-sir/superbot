@@ -313,6 +313,34 @@ def scenario_closure(world):
     return evidence
 
 
+def scenario_fanout(world):
+    """A bot that messages two teammates at once gets both replies; the cards fold per exchange."""
+    first = world.bot("甲", "你是数学助手。收到问题直接给出答案，不要反问。")
+    second = world.bot("乙", "你是数学助手。收到问题直接给出答案，不要反问。")
+    asker = world.bot("协调", "你是协调者。需要别人协助时用 send_to_agent 工具。")
+    conv = world.direct(asker)
+    send(conv, f"请在同一轮里用 send_to_agent 分别给「{first['name']}」和「{second['name']}」发私信："
+               f"问前者 12 乘以 12 等于多少，问后者 25 乘以 4 等于多少。发完后本轮先结束。"
+               f"两个回复都送回来以后，把两个数字告诉我，并在最后加上 FANOUT-OK。")
+
+    def done():
+        texts = bot_texts(conv)
+        return any("FANOUT-OK" in t and "144" in t and "100" in t for t in texts) and idle(conv)
+
+    try:
+        wait(done, 300, what="the coordinator to report both answers")
+    finally:
+        cards = sql(f"select metadata->>'thread_id', metadata->>'direction', metadata->>'peer_bot_name' "
+                    f"from messages where conversation_id = '{conv}' and metadata->>'kind' = 'agent_thread' order by ordinal")
+        evidence = f"cards={[(c[0][:8], c[1], c[2][-6:]) for c in cards]} conv={conv}"
+        print("    " + evidence)
+    threads = {c[0] for c in cards}
+    assert len(threads) == 2, "expected two private exchanges: " + evidence
+    assert all({d for t, d, _ in cards if t == thread} == {"sent", "received"} for thread in threads),         "each exchange needs a sent and a received card: " + evidence
+    world.fanout_conv = conv
+    return evidence
+
+
 def scenario_goal(world):
     """A group works a goal through stages with evidence and stops by itself."""
     lead = world.bot("群主", "你是这个群的群主，负责组织大家完成群目标。做事干脆，不要反复确认。")
@@ -655,6 +683,7 @@ SCENARIOS = {
     "checkpoint": scenario_checkpoint,
     "side": scenario_side,
     "closure": scenario_closure,
+    "fanout": scenario_fanout,
     "pipeline": scenario_pipeline_approval,
     "failure": scenario_permanent_failure,
     "memory": scenario_memory,
@@ -692,7 +721,8 @@ def main():
             # Leave the data for a follow-up browser check; it is removed by
             # deleting the bots named in this line.
             print("KEPT bots=" + ",".join(world.bots) + " teams=" + ",".join(world.teams)
-                  + " checkpoint_conv=" + str(getattr(world, "checkpoint_conv", "")))
+                  + " checkpoint_conv=" + str(getattr(world, "checkpoint_conv", ""))
+                  + " fanout_conv=" + str(getattr(world, "fanout_conv", "")))
         else:
             world.cleanup()
     print("\nSUMMARY: " + "  ".join(f"{name}={result}" for name, result in results.items()))

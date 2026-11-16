@@ -43,6 +43,8 @@ import { NewGroupDialog } from "@/components/NewGroupDialog";
 import { BotInfoDialog } from "@/components/BotInfoDialog";
 import { RoutineDialog } from "@/components/RoutineDialog";
 import { AgentThreadPanel } from "@/components/AgentThreadPanel";
+import { AgentThreadGroup } from "@/components/AgentThreadGroup";
+import { buildTranscript, itemMessage } from "@/lib/agentThreads";
 import { SearchDialog } from "@/components/SearchDialog";
 import { VoiceCallPanel } from "@/components/VoiceCallPanel";
 import { ChatMessage } from "@/components/ChatMessage";
@@ -212,6 +214,9 @@ export default function HomePage() {
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const visibleMessages = useMemo(() => messages.filter((message) => !isToolApprovalNotice(message)), [messages]);
+  // Bot-to-bot private messages fold into one summary per exchange.
+  const transcript = useMemo(() => buildTranscript(visibleMessages), [visibleMessages]);
+  const transcriptAnchors = useMemo(() => transcript.map((item) => itemMessage(item)), [transcript]);
   const [streams, setStreams] = useState<Record<string, StreamState>>({});
   const [tools, setTools] = useState<Record<string, ToolActivity[]>>({});
   const [runStatus, setRunStatus] = useState<Record<string, string>>({});
@@ -1738,11 +1743,26 @@ export default function HomePage() {
                     }}
                   />
                 )}
-                {visibleMessages.map((message, index) => {
-                  const prev = visibleMessages[index - 1];
-                  const showDate = !prev || dateKey(prev.created_at) !== dateKey(message.created_at);
+                {transcript.map((item, index) => {
+                  const prevItem = transcript[index - 1];
+                  const first = itemMessage(item, "first");
+                  const showDate = !prevItem || dateKey(itemMessage(prevItem).created_at) !== dateKey(first.created_at);
+                  if (item.kind === "agents") {
+                    return (
+                      <Fragment key={item.key}>
+                        {showDate && <div className="sb-date-sep">{dateLabel(first.created_at)}</div>}
+                        <AgentThreadGroup
+                          threads={item.threads}
+                          bots={bots}
+                          bot={activeBot}
+                          onOpenAgentThread={(threadID) => setAgentThreadID(threadID)}
+                        />
+                      </Fragment>
+                    );
+                  }
+                  const message = item.message;
                   const isTeam = Boolean(activeTeam);
-                  const position = groupPosition(messages, index);
+                  const position = groupPosition(transcriptAnchors, index);
                   const senderVisible =
                     isTeam && message.sender_type === "bot" && (position === "first" || position === "single");
                   return (
