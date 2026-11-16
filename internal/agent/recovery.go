@@ -61,9 +61,6 @@ const resumeNotice = "【系统】上一次执行在这里被中断（服务重�
 // saveProgress records the transcript after a finished tool round. It is best
 // effort: losing a checkpoint only means a restart replays more.
 func (e *Engine) saveProgress(ctx context.Context, conv store.Conversation, cycle store.Cycle, run store.Run, bot store.Bot, messages []llm.Message, pinned, step int) {
-	if conv.Kind == "team" {
-		return
-	}
 	encoded, err := json.Marshal(progressEnvelope{Pinned: pinned, Messages: messages})
 	if err != nil {
 		return

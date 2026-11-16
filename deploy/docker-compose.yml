@@ -77,10 +77,15 @@ services:
       dockerfile: deploy/Dockerfile.api
     image: superbot/api:latest
     restart: unless-stopped
+    # The API and worker run as the sandbox user, not root: they can write
+    # inside workspaces but cannot replace the root-owned directories that
+    # sandbox mounts come from (see deploy/harden-data-permissions.sh).
+    user: "1000:1000"
     env_file:
       - ../.env
     environment:
       SUPERBOT_HTTP_ADDR: 0.0.0.0:8080
+      HOME: /tmp
     depends_on:
       postgres:
         condition: service_healthy
@@ -99,19 +104,59 @@ services:
     image: superbot/api:latest
     restart: unless-stopped
     command: ["worker"]
+    user: "1000:1000"
     env_file:
       - ../.env
+    environment:
+      # The worker reaches Docker only through docker-proxy, never the raw
+      # socket.
+      DOCKER_HOST: tcp://docker-proxy:2375
+      HOME: /tmp
     depends_on:
       postgres:
         condition: service_healthy
+      docker-proxy:
+        condition: service_started
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
       - ../data:/srv/superbot/data
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
       - default
       - superbot_sandbox
+      - superbot_docker
+
+  docker-proxy:
+    # Allowlisting Docker Engine proxy (internal/dockerproxy): permits only
+    # the sandbox container lifecycle and refuses privileged containers,
+    # host mounts and every other endpoint. It holds the Docker socket, so
+    # it gets no env_file, no published port, and only the internal network
+    # it shares with the worker.
+    image: superbot/api:latest
+    restart: unless-stopped
+    command: ["docker-proxy"]
+    environment:
+      # Host path of the data directory as the Docker daemon sees it; every
+      # sandbox bind mount source must lie under it. The worker passes
+      # SUPERBOT_DATA_DIR paths, so this only works where the host path
+      # equals the in-container path (/srv/superbot/data).
+      SUPERBOT_DOCKERPROXY_BIND_ROOT: /srv/superbot/data
+      # Must list SUPERBOT_SANDBOX_IMAGE / SUPERBOT_DESKTOP_IMAGE and
+      # SUPERBOT_SANDBOX_NETWORK if .env overrides them.
+      SUPERBOT_DOCKERPROXY_IMAGES: superbot/computer:latest,superbot/computer-desktop:latest
+      SUPERBOT_DOCKERPROXY_NETWORKS: superbot_sandbox
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Mounted so bind sources can be checked for links on disk and new
+      # workspace and team folders created on the worker's behalf.
+      - ../data:/srv/superbot/data
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - superbot_docker
 
   web:
     build:
@@ -143,3 +188,6 @@ volumes:
 networks:
   superbot_sandbox:
     name: superbot_sandbox
+  superbot_docker:
+    name: superbot_docker
+    internal: true

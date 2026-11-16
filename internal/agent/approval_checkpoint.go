@@ -100,6 +100,12 @@ func (e *Engine) resumeFromCheckpoint(ctx context.Context, conv store.Conversati
 		return nil, fmt.Errorf("load checkpoint: %w", err)
 	}
 	if checkpoint.Status != "waiting" {
+		// A team resume consumes its checkpoint before running the stages
+		// that were still owed; if that cycle is reclaimed, the recorded
+		// team progress takes over from there.
+		if conv.Kind == "team" && checkpoint.Status == "consumed" {
+			return e.runTeam(ctx, conv, cycle, leaseID)
+		}
 		return nil, fmt.Errorf("checkpoint is already %s", checkpoint.Status)
 	}
 	decision := "denied"

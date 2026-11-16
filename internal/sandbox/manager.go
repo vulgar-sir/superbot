@@ -129,10 +129,9 @@ func normalizeProfile(profile string) string {
 func (m *Manager) Ensure(ctx context.Context, ownerID, botID uuid.UUID, profile string) (Info, error) {
 	profile = normalizeProfile(profile)
 	workspace := m.WorkspacePath(botID)
-	if err := os.MkdirAll(workspace, 0o777); err != nil {
+	if err := m.EnsureDirs(ctx, workspace); err != nil {
 		return Info{}, fmt.Errorf("create workspace: %w", err)
 	}
-	_ = os.Chmod(workspace, 0o777)
 
 	unlock := m.botLocks.Lock(botID)
 	defer unlock()
@@ -168,9 +167,56 @@ func (m *Manager) Ensure(ctx context.Context, ownerID, botID uuid.UUID, profile 
 		}
 	}
 
+	created, err := m.cli.ContainerCreate(ctx, ContainerSpec{
+		Image:          m.image,
+		DesktopImage:   m.desktopImage,
+		SandboxNetwork: m.sandboxNetwork,
+		BotID:          botID,
+		Profile:        profile,
+		Workspace:      workspace,
+		TeamMounts:     teamMounts,
+		TeamsLabel:     teamsLabel,
+	}.CreateOptions())
+	if err != nil {
+		if info, inspectErr := m.cli.ContainerInspect(ctx, name, client.ContainerInspectOptions{}); inspectErr == nil {
+			if info.Container.State == nil || !info.Container.State.Running {
+				_, _ = m.cli.ContainerStart(ctx, info.Container.ID, client.ContainerStartOptions{})
+			}
+			return m.infoFromInspect(ctx, ownerID, botID, profile, workspace, name, info.Container)
+		}
+		return Info{}, fmt.Errorf("create sandbox: %w", err)
+	}
+	if _, err := m.cli.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
+		return Info{}, fmt.Errorf("start sandbox: %w", err)
+	}
+	info, err := m.cli.ContainerInspect(ctx, name, client.ContainerInspectOptions{})
+	if err != nil {
+		return Info{}, fmt.Errorf("inspect sandbox: %w", err)
+	}
+	m.logger.Info("sandbox started", "bot_id", botID, "container", name, "profile", profile)
+	return m.infoFromInspect(ctx, ownerID, botID, profile, workspace, name, info.Container)
+}
+
+// ContainerSpec holds what goes into a bot sandbox's create request.
+type ContainerSpec struct {
+	Image          string
+	DesktopImage   string
+	SandboxNetwork string
+	BotID          uuid.UUID
+	Profile        string
+	Workspace      string
+	TeamMounts     []string
+	TeamsLabel     string
+}
+
+// CreateOptions builds the POST /containers/create request Ensure sends. It
+// is kept separate so the Docker API proxy (internal/dockerproxy) can test
+// its allowlist against exactly what the worker sends.
+func (s ContainerSpec) CreateOptions() client.ContainerCreateOptions {
+	profile := normalizeProfile(s.Profile)
 	isComputer := profile != "none"
 	configObj := &container.Config{
-		Image:      m.image,
+		Image:      s.Image,
 		WorkingDir: "/workspace",
 		User:       "1000:1000",
 		Env: []string{
@@ -183,14 +229,14 @@ func (m *Manager) Ensure(ctx context.Context, ownerID, botID uuid.UUID, profile 
 			"LANG=C.UTF-8",
 		},
 		Labels: map[string]string{
-			"superbot.bot_id":  botID.String(),
+			"superbot.bot_id":  s.BotID.String(),
 			"superbot.profile": profile,
-			teamsLabelKey:      teamsLabel,
+			teamsLabelKey:      s.TeamsLabel,
 			mountsVersionKey:   mountsVersion,
 		},
 	}
 	hostConfig := &container.HostConfig{
-		Binds:         append([]string{filepath.ToSlash(workspace) + ":/workspace"}, teamMounts...),
+		Binds:         append([]string{filepath.ToSlash(s.Workspace) + ":/workspace"}, s.TeamMounts...),
 		AutoRemove:    false,
 		RestartPolicy: container.RestartPolicy{Name: "unless-stopped"},
 		CapDrop:       []string{"ALL"},
@@ -199,16 +245,16 @@ func (m *Manager) Ensure(ctx context.Context, ownerID, botID uuid.UUID, profile 
 	}
 	if isComputer {
 		if profile == "desktop" {
-			configObj.Image = m.desktopImage
+			configObj.Image = s.DesktopImage
 			configObj.Cmd = []string{"/usr/local/bin/start-desktop.sh"}
 		} else {
-			configObj.Image = m.image
+			configObj.Image = s.Image
 			configObj.Cmd = []string{"/usr/local/bin/start-browser.sh"}
 		}
-		if m.sandboxNetwork != "" {
+		if s.SandboxNetwork != "" {
 			// Production: computers live on a dedicated Docker network with
 			// the API and worker. No host ports are published.
-			hostConfig.NetworkMode = container.NetworkMode(m.sandboxNetwork)
+			hostConfig.NetworkMode = container.NetworkMode(s.SandboxNetwork)
 		} else {
 			// Local development: the API and worker run on the host, so
 			// publish dynamic loopback ports instead.
@@ -235,7 +281,7 @@ func (m *Manager) Ensure(ctx context.Context, ownerID, botID uuid.UUID, profile 
 			PidsLimit:  int64Ptr(computerPids),
 		}
 	} else {
-		configObj.Image = m.image
+		configObj.Image = s.Image
 		configObj.Cmd = []string{"sleep", "infinity"}
 		hostConfig.NetworkMode = container.NetworkMode("none")
 		hostConfig.Tmpfs = map[string]string{"/tmp": "rw,size=128m,mode=1777"}
@@ -246,30 +292,11 @@ func (m *Manager) Ensure(ctx context.Context, ownerID, botID uuid.UUID, profile 
 			PidsLimit:  int64Ptr(sandboxPids),
 		}
 	}
-
-	created, err := m.cli.ContainerCreate(ctx, client.ContainerCreateOptions{
-		Name:       name,
+	return client.ContainerCreateOptions{
+		Name:       containerName(s.BotID),
 		Config:     configObj,
 		HostConfig: hostConfig,
-	})
-	if err != nil {
-		if info, inspectErr := m.cli.ContainerInspect(ctx, name, client.ContainerInspectOptions{}); inspectErr == nil {
-			if info.Container.State == nil || !info.Container.State.Running {
-				_, _ = m.cli.ContainerStart(ctx, info.Container.ID, client.ContainerStartOptions{})
-			}
-			return m.infoFromInspect(ctx, ownerID, botID, profile, workspace, name, info.Container)
-		}
-		return Info{}, fmt.Errorf("create sandbox: %w", err)
 	}
-	if _, err := m.cli.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
-		return Info{}, fmt.Errorf("start sandbox: %w", err)
-	}
-	info, err := m.cli.ContainerInspect(ctx, name, client.ContainerInspectOptions{})
-	if err != nil {
-		return Info{}, fmt.Errorf("inspect sandbox: %w", err)
-	}
-	m.logger.Info("sandbox started", "bot_id", botID, "container", name, "profile", profile)
-	return m.infoFromInspect(ctx, ownerID, botID, profile, workspace, name, info.Container)
 }
 
 const (
@@ -291,10 +318,9 @@ func (m *Manager) teamMounts(ctx context.Context, botID uuid.UUID) ([]string, st
 		return nil, "", fmt.Errorf("list bot teams: %w", err)
 	}
 	return teamBinds(m.cfg.DataDir, teamIDs, func(dir string) error {
-		if err := os.MkdirAll(dir, 0o777); err != nil {
+		if err := m.EnsureDirs(ctx, dir); err != nil {
 			return fmt.Errorf("create team shared dir: %w", err)
 		}
-		_ = os.Chmod(dir, 0o777)
 		return nil
 	})
 }
@@ -408,13 +434,13 @@ func (m *Manager) execInContainer(ctx context.Context, name string, cmd []string
 	if seconds < 1 {
 		seconds = 1
 	}
-	wrapped := append([]string{"timeout", fmt.Sprintf("%ds", seconds)}, cmd...)
 	if workdir == "" {
 		workdir = "/workspace"
 	}
 	execCtx, cancel := context.WithTimeout(ctx, timeout+15*time.Second)
 	defer cancel()
 	marker := uuid.NewString()
+	wrapped := wrapExecCommand(marker, seconds, cmd)
 
 	created, err := m.cli.ExecCreate(execCtx, name, client.ExecCreateOptions{
 		AttachStdout: true,
@@ -529,7 +555,7 @@ func (m *Manager) ProcessActions(ctx context.Context) {
 			_, _ = m.cli.ContainerRemove(ctx, info.Container.ID, client.ContainerRemoveOptions{Force: true})
 		}
 		if action.Kind == "reset" {
-			if err := os.RemoveAll(m.WorkspacePath(action.BotID)); err != nil {
+			if err := clearDir(m.WorkspacePath(action.BotID)); err != nil {
 				_ = m.db.MarkWorkspaceActionFailed(ctx, store.MarkWorkspaceActionFailedParams{
 					ID: action.ID, Error: err.Error(),
 				})
@@ -663,10 +689,10 @@ func (m *Manager) restoreWorkspace(ctx context.Context, action store.WorkspaceAc
 		_, _ = m.cli.ContainerRemove(ctx, info.Container.ID, client.ContainerRemoveOptions{Force: true})
 	}
 	workspace := m.WorkspacePath(action.BotID)
-	if err := os.RemoveAll(workspace); err != nil {
+	if err := clearDir(workspace); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(workspace, 0o755); err != nil {
+	if err := m.EnsureDirs(ctx, workspace); err != nil {
 		return err
 	}
 	file, err := os.Open(snapshot.ArchivePath)

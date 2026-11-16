@@ -131,6 +131,11 @@ func (x *memoryExtractor) Extract(ctx context.Context, req memory.ExtractRequest
 	if row, err := e.db.GetModelByName(ctx, store.GetModelByNameParams{ProviderID: providerRow.ID, Name: bot.Model}); err == nil {
 		modelRow = &row
 	}
+	// The review spends the same money as a turn, so it answers to the same
+	// limits: the account's weekly budget and the conversation's budget.
+	if err := e.checkWeeklyBudget(ctx, req.OwnerID); err != nil {
+		return "", err
+	}
 
 	request := llm.Request{
 		Model: bot.Model,
@@ -141,6 +146,22 @@ func (x *memoryExtractor) Extract(ctx context.Context, req memory.ExtractRequest
 		MaxTokens: memoryReviewTokens,
 		JSONMode:  true,
 	}
+	reserved := estimateRequestCost(modelRow, request)
+	if reserved > 0 {
+		n, err := e.db.ReserveConversationBudget(ctx, store.ReserveConversationBudgetParams{ID: req.ConversationID, ReservedMicros: reserved})
+		if err != nil {
+			return "", fmt.Errorf("reserve conversation budget: %w", err)
+		}
+		if n == 0 {
+			return "", errors.New("会话预算不足，跳过记忆回顾")
+		}
+	}
+	settled := false
+	defer func() {
+		if !settled && reserved > 0 {
+			_ = e.db.ReleaseConversationReservation(context.WithoutCancel(ctx), store.ReleaseConversationReservationParams{ID: req.ConversationID, ReservedMicros: reserved})
+		}
+	}()
 	stream, err := provider.Stream(ctx, request)
 	if err != nil {
 		return "", err
@@ -169,6 +190,13 @@ func (x *memoryExtractor) Extract(ctx context.Context, req memory.ExtractRequest
 			CompletionTokens: EstimateTokens(text.String()),
 		}
 	}
+	cost := computeCost(modelRow, usage)
+	if err := e.db.SettleConversationUsage(ctx, store.SettleConversationUsageParams{
+		ID: req.ConversationID, ReservedMicros: reserved, SpentMicros: cost,
+	}); err != nil {
+		e.logger.Warn("settle memory review cost failed", "conversation_id", req.ConversationID, "error", err)
+	}
+	settled = true
 	if _, err := e.db.CreateUsageRecord(ctx, store.CreateUsageRecordParams{
 		UserID:           req.UserID,
 		BotID:            &bot.ID,
@@ -177,7 +205,7 @@ func (x *memoryExtractor) Extract(ctx context.Context, req memory.ExtractRequest
 		PromptTokens:     int64(usage.PromptTokens),
 		CachedTokens:     int64(usage.CachedTokens),
 		CompletionTokens: int64(usage.CompletionTokens),
-		CostMicros:       computeCost(modelRow, usage),
+		CostMicros:       cost,
 		Estimated:        estimated,
 	}); err != nil {
 		e.logger.Warn("record memory review usage failed", "conversation_id", req.ConversationID, "error", err)

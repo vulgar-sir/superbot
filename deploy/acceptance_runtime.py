@@ -113,11 +113,11 @@ class World:
         print(f"provider={llm[0]['name']} kind={llm[0]['kind']} model={self.model} "
               f"auto_review={permissions.get('auto_review')}")
 
-    def bot(self, name, prompt="", model=None, memory=False):
+    def bot(self, name, prompt="", model=None, memory=False, profile="none"):
         _, data = call("POST", "/api/bots", {
             "name": f"{PREFIX}{name}-{TAG}", "slug": f"accept-{TAG}-{uuid.uuid4().hex[:6]}",
             "system_prompt": prompt, "provider_id": self.provider_id,
-            "model": model or self.model, "memory_enabled": memory, "computer_profile": "none",
+            "model": model or self.model, "memory_enabled": memory, "computer_profile": profile,
         })
         self.bots.append(data["bot"]["id"])
         return data["bot"]
@@ -474,6 +474,70 @@ def scenario_sandbox_mounts(world):
     return evidence
 
 
+def scenario_docker_proxy(world):
+    """The worker reaches Docker only through the filtering proxy."""
+    mounts = subprocess.run(["docker", "inspect", "superbot-worker-1", "--format",
+                             "{{range .Mounts}}{{.Source}} {{end}}|{{range .Config.Env}}{{println .}}{{end}}"],
+                            capture_output=True, text=True, timeout=30).stdout
+    worker_mounts, _, worker_env = mounts.partition("|")
+    proxy_ip = subprocess.run(["docker", "inspect", "superbot-docker-proxy-1", "--format",
+                               "{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}"],
+                              capture_output=True, text=True, timeout=30).stdout.split()
+    assert proxy_ip, "docker-proxy container is not running"
+    base = f"http://{proxy_ip[0]}:2375"
+
+    def raw(method, path, body=None):
+        data = json.dumps(body).encode() if body is not None else None
+        request = urllib.request.Request(base + path, data=data, method=method,
+                                         headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                return response.status, response.read()[:200]
+        except urllib.error.HTTPError as error:
+            return error.code, error.read()[:200]
+
+    ping = raw("GET", "/_ping")
+    images = raw("GET", "/v1.47/images/json")
+    build = raw("POST", "/build")
+    privileged = raw("POST", "/v1.47/containers/create?name=superbot-bot-evil" + TAG, {
+        "Image": "superbot/computer:latest", "User": "1000:1000",
+        "Labels": {"superbot.bot_id": "x"},
+        "HostConfig": {"Privileged": True, "Binds": ["/:/host"], "CapDrop": ["ALL"],
+                       "SecurityOpt": ["no-new-privileges"], "NetworkMode": "host"},
+    })
+    foreign = raw("POST", "/v1.47/containers/superbot-postgres/exec", {"Cmd": ["id"]})
+    evidence = (f"worker_mounts=[{worker_mounts.strip()}] docker_host={'DOCKER_HOST=tcp://docker-proxy:2375' in worker_env} "
+                f"ping={ping[0]} images={images[0]} build={build[0]} privileged_create={privileged[0]} "
+                f"exec_into_postgres={foreign[0]}")
+    assert "docker.sock" not in worker_mounts, "the worker still mounts the Docker socket: " + evidence
+    assert ping[0] == 200, evidence
+    assert images[0] == 403 and build[0] == 403, "non-sandbox endpoints must be refused: " + evidence
+    assert privileged[0] == 403, "a privileged container must be refused: " + evidence
+    assert foreign[0] == 403, "exec into a non-bot container must be refused: " + evidence
+    return evidence
+
+
+def scenario_browser(world):
+    """A browser bot's computer starts through the proxy and can browse."""
+    bot = world.bot("浏览器", "你会用浏览器工具。按要求打开网页后如实报告页面标题。", profile="browser")
+    conv = world.direct(bot)
+    send(conv, "请用 browser_open 打开 https://example.com ，然后告诉我页面标题，最后一行写 BROWSER-OK。")
+    wait_idle(conv, 300)
+    texts = bot_texts(conv)
+    tools = sql(f"select ti.name, ti.status from tool_invocations ti join runs r on r.id = ti.run_id "
+                f"where r.conversation_id = '{conv}' order by ti.created_at")
+    container = "superbot-bot-" + bot["id"].replace("-", "")[:12]
+    state = subprocess.run(["docker", "inspect", container, "--format",
+                            "{{.State.Running}} {{index .Config.Labels \"superbot.profile\"}} {{.HostConfig.Privileged}}"],
+                           capture_output=True, text=True, timeout=30).stdout.strip()
+    subprocess.run(["docker", "rm", "-f", container], capture_output=True, timeout=60)
+    evidence = f"container={state} tools={tools} last={texts[-1][-120:] if texts else ''!r}"
+    assert state.startswith("true browser false"), "browser computer did not start: " + evidence
+    assert any(name == "browser_open" and status == "done" for name, status in tools), evidence
+    assert texts and "Example Domain" in texts[-1], "page title not reported: " + evidence
+    return evidence
+
+
 SCENARIOS = {
     "interjection": scenario_interjection,
     "checkpoint": scenario_checkpoint,
@@ -484,6 +548,8 @@ SCENARIOS = {
     "memory": scenario_memory,
     "goal": scenario_goal,
     "sandbox": scenario_sandbox_mounts,
+    "proxy": scenario_docker_proxy,
+    "browser": scenario_browser,
 }
 
 

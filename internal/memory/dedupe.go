@@ -142,68 +142,99 @@ func (s *Service) SaveWith(ctx context.Context, in SaveInput) (SaveResult, error
 		in.Metadata = json.RawMessage(`{}`)
 	}
 	// An embedding outage must not lose the memory: the row is still written
-	// and the error is reported, exactly as before dedupe existed.
+	// and the error is reported, exactly as before dedupe existed. The
+	// embedding is computed before the transaction so no network call holds
+	// the scope lock.
 	vector, embedErr := s.EmbedText(ctx, content)
 
-	if existing, found := s.findDuplicate(ctx, in, content, vector); found {
+	// The duplicate check and the write run under one lock per scope, so two
+	// saves of the same fact at the same moment cannot both insert.
+	tx, err := s.db.Pool.Begin(ctx)
+	if err != nil {
+		return SaveResult{}, err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, scopeLockKey(in)); err != nil {
+		return SaveResult{}, err
+	}
+	q := s.db.WithTx(tx)
+	result, embedLater, err := s.saveLocked(ctx, q, in, content, vector, embedErr)
+	if err != nil {
+		return result, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return SaveResult{}, err
+	}
+	return result, embedLater
+}
+
+func scopeLockKey(in SaveInput) string {
+	return "memory:" + in.OwnerID.String() + ":" + in.ScopeType + ":" + in.ScopeID.String()
+}
+
+// saveLocked does the dedupe-or-insert inside the caller's transaction. The
+// second error is a non-fatal embedding failure: the row is kept, and the
+// caller reports the error after committing.
+func (s *Service) saveLocked(ctx context.Context, q *store.Queries, in SaveInput, content, vector string, embedErr error) (SaveResult, error, error) {
+	if existing, found := s.findDuplicate(ctx, q, in, content, vector); found {
 		// A reviewed restatement only confirms the fact is still current; it
 		// must not overwrite wording the user or the bot chose deliberately.
 		next := content
 		if in.Source == SourceReview {
 			next = existing.Content
 		}
-		item, err := s.db.RefreshMemory(ctx, store.RefreshMemoryParams{
+		item, err := q.RefreshMemory(ctx, store.RefreshMemoryParams{
 			ID: existing.ID, OwnerID: in.OwnerID, Content: next, Pinned: in.Pinned,
 		})
 		if err != nil {
-			return SaveResult{}, err
+			return SaveResult{}, nil, err
 		}
 		item.Embedding = nil
 		if next != existing.Content || existing.EmbeddingModel != s.ModelName() {
 			if embedErr != nil {
-				return SaveResult{Memory: item, Duplicate: true}, embedErr
+				return SaveResult{Memory: item, Duplicate: true}, embedErr, nil
 			}
 			if next != content {
 				if vector, err = s.EmbedText(ctx, next); err != nil {
-					return SaveResult{Memory: item, Duplicate: true}, err
+					return SaveResult{Memory: item, Duplicate: true}, err, nil
 				}
 			}
-			if err := s.db.SetMemoryEmbedding(ctx, store.SetMemoryEmbeddingParams{
+			if err := q.SetMemoryEmbedding(ctx, store.SetMemoryEmbeddingParams{
 				ID: item.ID, OwnerID: in.OwnerID, Embedding: vector, EmbeddingModel: s.ModelName(),
 			}); err != nil {
-				return SaveResult{Memory: item, Duplicate: true}, err
+				return SaveResult{}, nil, err
 			}
 		}
-		return SaveResult{Memory: item, Duplicate: true}, nil
+		return SaveResult{Memory: item, Duplicate: true}, nil, nil
 	}
 
-	item, err := s.db.CreateMemory(ctx, store.CreateMemoryParams{
+	item, err := q.CreateMemory(ctx, store.CreateMemoryParams{
 		OwnerID: in.OwnerID, ScopeType: in.ScopeType, ScopeID: in.ScopeID,
 		Content: content, Metadata: in.Metadata, Source: in.Source, Pinned: in.Pinned,
 		SourceConversationID: in.SourceConversationID,
 		SourceOrdinal:        pgtype.Int8{Int64: in.SourceOrdinal, Valid: in.SourceOrdinal > 0},
 	})
 	if err != nil {
-		return SaveResult{}, err
+		return SaveResult{}, nil, err
 	}
 	item.Embedding = nil
 	if embedErr != nil {
-		return SaveResult{Memory: item}, embedErr
+		return SaveResult{Memory: item}, embedErr, nil
 	}
-	if err := s.db.SetMemoryEmbedding(ctx, store.SetMemoryEmbeddingParams{
+	if err := q.SetMemoryEmbedding(ctx, store.SetMemoryEmbeddingParams{
 		ID: item.ID, OwnerID: in.OwnerID, Embedding: vector, EmbeddingModel: s.ModelName(),
 	}); err != nil {
-		return SaveResult{Memory: item}, err
+		return SaveResult{}, nil, err
 	}
-	return SaveResult{Memory: item}, nil
+	return SaveResult{Memory: item}, nil, nil
 }
 
 // findDuplicate looks for an active memory in the same scope that says the
 // same thing. Lookup failures count as "no duplicate": a missed dedupe is
 // cleaned up later by Tidy, a refused save would lose the fact.
-func (s *Service) findDuplicate(ctx context.Context, in SaveInput, content, vector string) (store.Memory, bool) {
+func (s *Service) findDuplicate(ctx context.Context, q *store.Queries, in SaveInput, content, vector string) (store.Memory, bool) {
 	if vector != "" {
-		rows, err := s.db.SearchMemoriesScored(ctx, store.SearchMemoriesScoredParams{
+		rows, err := q.SearchMemoriesScored(ctx, store.SearchMemoriesScoredParams{
 			OwnerID: in.OwnerID, ScopeType: in.ScopeType, ScopeID: in.ScopeID,
 			Embedding: vector, EmbeddingModel: s.ModelName(),
 			MinSimilarity: duplicateSimilarity, MaxResults: 1,
@@ -214,7 +245,7 @@ func (s *Service) findDuplicate(ctx context.Context, in SaveInput, content, vect
 	}
 	// Rows embedded in another vector space (or not embedded yet) are only
 	// reachable by text.
-	rows, err := s.db.ListMemories(ctx, store.ListMemoriesParams{
+	rows, err := q.ListMemories(ctx, store.ListMemoriesParams{
 		OwnerID: in.OwnerID, ScopeType: in.ScopeType, ScopeID: in.ScopeID, Limit: scopeScanLimit,
 	})
 	if err != nil {

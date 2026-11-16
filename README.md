@@ -90,7 +90,8 @@ docker compose --env-file .env -f deploy/docker-compose.yml up -d
 | `caddy` | 对外入口（默认 `32608:80`），`/api/*` 反代 Go API，SSE/WebSocket 已配置 |
 | `web` | Next.js 前端 |
 | `api` | REST + SSE |
-| `worker` | Agent 运行时、编排、Docker 沙箱、定时任务 |
+| `worker` | Agent 运行时、编排、Docker 沙箱、定时任务（经 `docker-proxy` 访问 Docker） |
+| `docker-proxy` | 唯一持有 Docker socket 的服务；只放行沙箱生命周期端点，校验容器创建，代建工作区目录 |
 | `postgres` | 业务数据 + pgvector |
 
 国内网络注意：
@@ -137,7 +138,8 @@ docker compose --env-file .env -f deploy/docker-compose.yml up -d
 
 - Provider/MCP 密钥 AES-256-GCM 加密；API 永不回显明文。
 - 文件工具使用 `os.Root` 限定根目录；`fetch_url` 拦截私网/回环/云元数据。
-- 沙箱：非特权、cap-drop ALL、资源限额、独立工作区；生产浏览器容器只加入专用 Docker 网络，不发布宿主机端口。
+- 沙箱：非特权、cap-drop ALL、资源限额、独立工作区；每个 Bot 只挂载自己所在团队的共享目录；生产浏览器容器只加入专用 Docker 网络，不发布宿主机端口。
+- Docker：worker 不持有 Docker socket，经 `docker-proxy` 访问，只放行沙箱所需端点并校验每个创建请求；API 与 worker 以 uid 1000 运行，沙箱挂载源及其父目录对它们只读（首次部署执行 `deploy/harden-data-permissions.sh`）。
 - MCP/Skill 内容按不可信输入处理；扩展变更写审计日志。
 - 建议生产环境使用域名 + HTTPS，并把 `SUPERBOT_COOKIE_INSECURE` 关闭。
 

@@ -3,7 +3,6 @@ package httpapi
 import (
 	"context"
 	"crypto/ed25519"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -95,7 +94,7 @@ func NewServer(
 	factory *llm.Factory,
 	logger *slog.Logger,
 ) *Server {
-	_, deviceSignKey, _ := ed25519.GenerateKey(rand.Reader)
+	deviceSignKey := deriveDeviceSignKey(cfg.SecretKey)
 	server := &Server{
 		cfg:           cfg,
 		db:            db,
@@ -367,7 +366,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "email and password are required")
 		return
 	}
-	if !s.allowLogin(r.RemoteAddr) {
+	if !s.allowLogin(clientIP(r)) {
 		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many login attempts, try again later")
 		return
 	}
@@ -381,7 +380,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "login failed")
 		return
 	}
-	s.clearLoginAttempts(r.RemoteAddr)
+	s.clearLoginAttempts(clientIP(r))
 	s.setSessionCookie(w, token, expires)
 	writeJSON(w, http.StatusOK, map[string]any{"user": toUserDTO(user)})
 }
@@ -466,11 +465,7 @@ func (s *Server) clearSessionCookie(w http.ResponseWriter) {
 	})
 }
 
-func (s *Server) allowLogin(remoteAddr string) bool {
-	ip := remoteAddr
-	if host, _, err := strings.Cut(remoteAddr, ":"); err {
-		ip = host
-	}
+func (s *Server) allowLogin(ip string) bool {
 	now := time.Now()
 	cutoff := now.Add(-time.Minute)
 	s.loginMu.Lock()
@@ -490,11 +485,9 @@ func (s *Server) allowLogin(remoteAddr string) bool {
 	return true
 }
 
-func (s *Server) clearLoginAttempts(remoteAddr string) {
-	ip := remoteAddr
-	if host, _, err := strings.Cut(remoteAddr, ":"); err {
-		ip = host
-	}
+// clearLoginAttempts resets the counter after a successful login. It must
+// use the same key as allowLogin, or successes would never clear anything.
+func (s *Server) clearLoginAttempts(ip string) {
 	s.loginMu.Lock()
 	delete(s.loginAttempts, ip)
 	s.loginMu.Unlock()

@@ -372,7 +372,7 @@ func (e *Engine) runBotTurnSeeded(ctx context.Context, conv store.Conversation, 
 	}
 
 	workspaceDir := filepath.Join(e.cfg.DataDir, "workspaces", bot.ID.String())
-	if err := os.MkdirAll(workspaceDir, 0o755); err != nil {
+	if err := e.ensureDirs(ctx, workspaceDir); err != nil {
 		return outcome, fmt.Errorf("create workspace: %w", err)
 	}
 	root, err := os.OpenRoot(workspaceDir)
@@ -386,10 +386,9 @@ func (e *Engine) runBotTurnSeeded(ctx context.Context, conv store.Conversation, 
 	sharedContainerPath := ""
 	if conv.TeamID != nil {
 		sharedHostPath = filepath.Join(e.cfg.DataDir, "teams", conv.TeamID.String(), "shared")
-		if err := os.MkdirAll(sharedHostPath, 0o777); err != nil {
+		if err := e.ensureDirs(ctx, sharedHostPath); err != nil {
 			return outcome, fmt.Errorf("create team shared dir: %w", err)
 		}
-		_ = os.Chmod(sharedHostPath, 0o777)
 		sharedRoot, err = os.OpenRoot(sharedHostPath)
 		if err != nil {
 			return outcome, fmt.Errorf("open team shared dir: %w", err)
@@ -401,9 +400,10 @@ func (e *Engine) runBotTurnSeeded(ctx context.Context, conv store.Conversation, 
 	registry, closeRegistry := e.buildRegistry(ctx, root, bot, sharedRoot, conv, cycle)
 	defer closeRegistry()
 	// A reclaimed cycle continues from the last finished tool round instead
-	// of replaying tools that already ran. Team cycles restart their
-	// orchestration, so a checkpoint cannot be matched to a round there.
-	if seed == nil && conv.Kind != "team" {
+	// of replaying tools that already ran. In a team cycle the checkpoint
+	// belongs to whichever member was cut off, and only that member picks it
+	// up when the resumed orchestration reaches it.
+	if seed == nil {
 		seed = e.loadProgressSeed(ctx, cycle, bot)
 	}
 	var messages []llm.Message
@@ -1701,4 +1701,18 @@ func parseBotParams(raw json.RawMessage) botParams {
 	var params botParams
 	_ = json.Unmarshal(raw, &params)
 	return params
+}
+
+// ensureDirs creates mount directories through the sandbox manager, which
+// falls back to the Docker proxy where the services may not create them.
+func (e *Engine) ensureDirs(ctx context.Context, dirs ...string) error {
+	if e.sandbox != nil {
+		return e.sandbox.EnsureDirs(ctx, dirs...)
+	}
+	for _, dir := range dirs {
+		if err := os.MkdirAll(dir, 0o777); err != nil {
+			return err
+		}
+	}
+	return nil
 }

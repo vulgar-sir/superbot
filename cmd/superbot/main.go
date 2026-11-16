@@ -57,6 +57,9 @@ func run() error {
 	if command == "mcp-echo" {
 		return runMCPEcho()
 	}
+	if command == "docker-proxy" {
+		return runDockerProxy()
+	}
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -82,7 +85,7 @@ func run() error {
 	case "reembed-memory":
 		return runReembedMemory(ctx, cfg, logger)
 	default:
-		return fmt.Errorf("unknown command %q (want serve, worker, migrate or genkey)", command)
+		return fmt.Errorf("unknown command %q (want serve, worker, migrate, docker-proxy or genkey)", command)
 	}
 }
 

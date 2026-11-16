@@ -671,3 +671,62 @@ func TestIntegrationGroupGoalDriverStopsByItself(t *testing.T) {
 		t.Fatalf("after the user spoke the driver should have run its budget again, nudges = %d", goal.Nudges)
 	}
 }
+
+func TestIntegrationReclaimedPipelineResumesAtUnfinishedStage(t *testing.T) {
+	f := newFixture(t, 128_000, 8_000)
+	ctx := context.Background()
+	first, second := f.bot("ResumeOne", true), f.bot("ResumeTwo", true)
+	team, err := f.db.CreateTeam(ctx, store.CreateTeamParams{
+		OwnerID: f.account, Name: "resume-" + uuid.NewString()[:6], Mode: "pipeline", Config: json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+	for index, bot := range []store.Bot{first, second} {
+		if err := f.db.AddTeamBot(ctx, store.AddTeamBotParams{TeamID: team.ID, BotID: bot.ID, Position: int32(index), Role: "member"}); err != nil {
+			t.Fatalf("add team bot: %v", err)
+		}
+	}
+	conv, err := f.db.CreateConversation(ctx, store.CreateConversationParams{
+		TeamID: &team.ID, Kind: "team", Title: "resume", CreatedBy: f.account,
+	})
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	sent := f.send(conv, "[[slow:1500]] 两个阶段依次处理")
+
+	// Stop the worker while stage two is thinking.
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		f.step(runCtx)
+	}()
+	deadline := time.Now().Add(15 * time.Second)
+	for len(botReplies(f.messages(conv))) < 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("stage one never finished")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	time.Sleep(300 * time.Millisecond)
+	cancel()
+	<-done
+	if got := len(botReplies(f.messages(conv))); got != 1 {
+		t.Fatalf("only stage one should have answered before the stop, got %d replies", got)
+	}
+
+	if !f.step(ctx) {
+		t.Fatal("the handed-back cycle was not reclaimable")
+	}
+	if cycle := f.cycle(sent.Cycle.ID); cycle.Status != "done" {
+		t.Fatalf("cycle status = %s (%s)", cycle.Status, cycle.Error)
+	}
+	speakers := map[uuid.UUID]int{}
+	for _, msg := range botReplies(f.messages(conv)) {
+		speakers[*msg.SenderBotID]++
+	}
+	if speakers[first.ID] != 1 || speakers[second.ID] != 1 {
+		t.Fatalf("stage one must not run again after the restart: %v", speakers)
+	}
+}

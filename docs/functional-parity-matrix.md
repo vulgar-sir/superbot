@@ -26,7 +26,14 @@
 | 模型层 | 请求阶段重试（429/5xx、Retry-After）、流空闲超时、finish_reason 与截断续写、Anthropic Provider、DeepSeek 思考模式 `reasoning_content` 回传与请求形状兜底；`SUPERBOT_LLM_DEBUG_DIR` 可落盘被拒请求（默认关） | 已验证 | `TestIntegrationWire*` 5 项（本地假思考模型服务器强制同样规则） |
 | 沙箱与安全 | 只挂载 Bot 所在团队的共享目录（成员变化自动重建）；审批 allow 规则不能被参数文本满足；MCP stdio 环境变量白名单；`postgres_query` 只读事务；stdio MCP 创建/批准需 owner/admin；子代理嵌套上限修正；SSE 支持 Last-Event-ID | 已验证 | 验收 sandbox：容器内 `ls /teams` 只见本团队 |
 
-已知限制：worker 仍挂载 Docker socket；沙箱中断时的进程清理为尽力而为；记忆去重不在事务内（每日整理兜底）；后台记忆回顾不占会话预算，只记用量。
+| Docker 访问收口 | worker 不再挂载 Docker socket，经 `docker-proxy`（`internal/dockerproxy`）访问：只放行沙箱生命周期所需的 10 个端点，只能操作 `superbot-bot-*` 容器；创建请求逐项校验（特权、CapAdd、host 网络、设备、root 用户、镜像白名单……），挂载源只允许 `workspaces/<uuid>` 与 `teams/<uuid>/shared` 且路径上不得有符号链接；代理只在内部网络、无端口 | 已验证 | 验收 proxy：images/build/特权创建/进入 postgres 执行均 403；22+ 项代理单测 |
+| 服务降权 | API 与 worker 以 uid 1000 运行；`data/`、`workspaces/`、`teams/`、`teams/<id>/` 为 root 只读，叶子目录由代理按需创建（`deploy/harden-data-permissions.sh`） | 已验证 | 生产实测：worker 内植入/替换/删除/改名挂载源全部被拒，工作区内正常写入 |
+| 停止即清理 | 命令运行在独立进程组；停止时按进程组、环境标记、以及「执行开始后被 PID 1 收养的孤儿」三路清理；容器进程数满导致清理无法启动时重启容器兜底 | 已验证 | 真实 Docker 集成测试 3 项（含 `env -i setsid` 逃逸与进程数打满） |
+| 记忆一致性与预算 | 去重写入在按作用域的事务锁内；后台回顾检查账户周预算并在会话预算上预留/结算 | 已验证 | 10 路并发写同一事实只存 1 行；预算耗尽时回顾被拒且不动预算 |
+| 团队周期续跑 | 被回收的团队周期按已记录进度继续（流水线阶段 / 圆桌轮次 / 群聊队列），被打断的成员从工具轮次检查点续跑 | 已验证 | `TestIntegrationReclaimedPipelineResumesAtUnfinishedStage` |
+| 其他 | 设备任务签名密钥由平台密钥派生（重启与多实例一致）；登录限流按真实客户端 IP，成功登录清零 | 已验证 | 单测；43 项浏览器回归通过 |
+
+验证汇总（本轮结束时）：集成测试 25 项全过；生产验收 11 个场景全过（含 proxy、browser）；浏览器 43 项全过；CI 各步骤本地全过（仓库尚无远端，GitHub 上未运行）。72 小时 soak 见 `deploy/soak_report.py` 输出。
 
 ## 当前进度快照（2026-11-13）
 

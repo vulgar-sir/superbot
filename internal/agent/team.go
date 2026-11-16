@@ -185,7 +185,7 @@ func (e *Engine) runGroup(
 		queue = append(queue, *lead)
 	}
 
-	return e.runGroupQueue(ctx, conv, cycle, leaseID, members, queue, map[uuid.UUID]int{}, maxTurns)
+	return e.runGroupQueue(ctx, conv, cycle, leaseID, members, queue, map[uuid.UUID]int{}, 0, maxTurns)
 }
 
 // maxGroupSpeaks lets a member answer a teammate who called it back (A asks
@@ -200,6 +200,7 @@ func (e *Engine) runGroupQueue(
 	members []store.Bot,
 	queue []store.Bot,
 	spoken map[uuid.UUID]int,
+	turnsDone int,
 	maxTurns int,
 ) (*runOutcome, error) {
 	outcome := &runOutcome{
@@ -210,7 +211,7 @@ func (e *Engine) runGroupQueue(
 	}
 	var lastSeen *uuid.UUID
 
-	for turn := 0; turn < maxTurns && len(queue) > 0; turn++ {
+	for turn := turnsDone; turn < maxTurns && len(queue) > 0; turn++ {
 		member := queue[0]
 		queue = queue[1:]
 		if spoken[member.ID] >= maxGroupSpeaks {
@@ -264,12 +265,22 @@ func (e *Engine) runGroupQueue(
 
 		queue = enqueueMentioned(queue, mentionedBots(turnOutcome.FinalText, members, member.ID), spoken)
 
+		queued := make([]string, 0, len(queue))
+		for _, next := range queue {
+			queued = append(queued, next.ID.String())
+		}
+		spokenByID := make(map[string]int, len(spoken))
+		for id, count := range spoken {
+			spokenByID[id.String()] = count
+		}
 		state, _ := json.Marshal(map[string]any{
 			"mode":              "group",
 			"turn":              turn + 1,
 			"last_bot_id":       member.ID.String(),
 			"last_bot_name":     member.Name,
 			"last_seen_message": lastSeen,
+			"queue":             queued,
+			"spoken":            spokenByID,
 		})
 		n, err := e.db.UpdateCycleProgress(ctx, store.UpdateCycleProgressParams{
 			ID:                cycle.ID,
@@ -464,6 +475,11 @@ func (e *Engine) runTeam(ctx context.Context, conv store.Conversation, cycle sto
 		members = append(members, tb.Bot)
 	}
 
+	// A cycle that already recorded member turns was interrupted and
+	// reclaimed (a fresh cycle has no progress); pick up after them.
+	if outcome, resumed, err := e.resumeTeam(ctx, conv, cycle, leaseID, team, members); resumed {
+		return outcome, err
+	}
 	if team.Mode == "pipeline" {
 		return e.runPipeline(ctx, conv, cycle, leaseID, members)
 	}
@@ -1019,7 +1035,7 @@ func (e *Engine) continueTeam(ctx context.Context, conv store.Conversation, cycl
 		if len(queue) == 0 {
 			return resumed, nil
 		}
-		rest, err = e.runGroupQueue(ctx, conv, cycle, leaseID, members, queue, map[uuid.UUID]int{bot.ID: 1}, maxRounds-1)
+		rest, err = e.runGroupQueue(ctx, conv, cycle, leaseID, members, queue, map[uuid.UUID]int{bot.ID: 1}, 1, maxRounds)
 	default:
 		// The coordinator re-reads the transcript, sees the resumed reply and
 		// decides whether anyone else still has to speak.
@@ -1048,4 +1064,92 @@ func (e *Engine) continueTeam(ctx context.Context, conv store.Conversation, cycl
 		rest.FinalText = resumed.FinalText
 	}
 	return rest, err
+}
+
+// teamProgress is what a team cycle records after each finished member turn.
+type teamProgress struct {
+	Mode     string         `json:"mode"`
+	Stage    int            `json:"stage"`
+	Round    int            `json:"round"`
+	Turn     int            `json:"turn"`
+	LastSeen *uuid.UUID     `json:"last_seen_message"`
+	Queue    []string       `json:"queue"`
+	Spoken   map[string]int `json:"spoken"`
+}
+
+// resumeTeam continues a reclaimed team cycle after the last member turn it
+// finished, so members who already answered are not run again. It reports
+// false when the cycle recorded no progress, in which case the caller starts
+// from the beginning.
+func (e *Engine) resumeTeam(ctx context.Context, conv store.Conversation, cycle store.Cycle, leaseID uuid.UUID, team store.Team, members []store.Bot) (*runOutcome, bool, error) {
+	if len(cycle.CoordinatorState) == 0 {
+		return nil, false, nil
+	}
+	var progress teamProgress
+	if err := json.Unmarshal(cycle.CoordinatorState, &progress); err != nil {
+		return nil, false, nil
+	}
+	finished := &runOutcome{ConversationID: conv.ID, CycleID: cycle.ID, RunsFinalized: true, FinalStatus: "done"}
+	cfg := parseTeamConfig(team.Config)
+	maxRounds := cfg.MaxRounds
+	if maxRounds <= 0 {
+		maxRounds = defaultTeamRounds
+	}
+	if maxRounds > maxTeamRounds {
+		maxRounds = maxTeamRounds
+	}
+	e.logger.Info("resuming team cycle", "cycle_id", cycle.ID, "mode", team.Mode, "attempt", cycle.Attempt,
+		"stage", progress.Stage, "round", progress.Round, "turn", progress.Turn)
+
+	switch team.Mode {
+	case "pipeline":
+		if progress.Stage <= 0 {
+			return nil, false, nil
+		}
+		if progress.Stage >= len(members) {
+			return finished, true, nil
+		}
+		previous := ""
+		if progress.LastSeen != nil {
+			if msg, err := e.db.GetMessage(ctx, *progress.LastSeen); err == nil {
+				previous = msg.Content
+			}
+		}
+		outcome, err := e.runPipelineFrom(ctx, conv, cycle, leaseID, members, progress.Stage, previous)
+		return outcome, true, err
+	case "group":
+		if progress.Turn <= 0 {
+			return nil, false, nil
+		}
+		byID := make(map[string]store.Bot, len(members))
+		for _, member := range members {
+			byID[member.ID.String()] = member
+		}
+		queue := make([]store.Bot, 0, len(progress.Queue))
+		for _, id := range progress.Queue {
+			if member, ok := byID[id]; ok {
+				queue = append(queue, member)
+			}
+		}
+		if len(queue) == 0 {
+			return finished, true, nil
+		}
+		spoken := make(map[uuid.UUID]int, len(progress.Spoken))
+		for id, count := range progress.Spoken {
+			if parsed, err := uuid.Parse(id); err == nil {
+				spoken[parsed] = count
+			}
+		}
+		outcome, err := e.runGroupQueue(ctx, conv, cycle, leaseID, members, queue, spoken, progress.Turn, maxRounds)
+		return outcome, true, err
+	default:
+		if progress.Round <= 0 {
+			return nil, false, nil
+		}
+		if progress.Round >= maxRounds {
+			return finished, true, nil
+		}
+		outcome, err := e.runRoundtable(ctx, conv, cycle, leaseID, team, members, cycle.TriggerMessageID, progress.Round+1)
+		return outcome, true, err
+	}
 }

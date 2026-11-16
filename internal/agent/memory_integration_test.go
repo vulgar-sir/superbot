@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 
 	"superbot/internal/memory"
@@ -199,5 +200,89 @@ func TestIntegrationMemoryReviewExtractsAndAdvances(t *testing.T) {
 	}
 	if extractor.calls != before {
 		t.Fatal("the same messages were reviewed twice")
+	}
+}
+
+func TestIntegrationMemoryConcurrentSavesStoreOneRow(t *testing.T) {
+	f := newFixture(t, 128_000, 8_000)
+	ctx := context.Background()
+	bot := f.bot("Concurrent", true)
+	var wg sync.WaitGroup
+	errs := make(chan error, 10)
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, err := f.engine.memory.SaveWith(ctx, memory.SaveInput{
+				OwnerID: f.account, ScopeType: "bot", ScopeID: bot.ID,
+				Content: strings.Repeat(" ", i%3) + "部署端口固定为 32608", Source: memory.SourceTool,
+			})
+			errs <- err
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("save: %v", err)
+		}
+	}
+	rows, err := f.db.ListMemoriesIncludingArchived(ctx, store.ListMemoriesIncludingArchivedParams{
+		OwnerID: f.account, ScopeType: "bot", ScopeID: bot.ID, Limit: 50,
+	})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("10 concurrent saves of one fact stored %d rows, want 1", len(rows))
+	}
+}
+
+func TestIntegrationMemoryReviewRespectsConversationBudget(t *testing.T) {
+	f := newFixture(t, 128_000, 8_000)
+	ctx := context.Background()
+	if _, err := f.db.Pool.Exec(ctx, `UPDATE models SET price_in_micros_per_mtok = 1000000, price_out_micros_per_mtok = 1000000 WHERE provider_id = $1`, f.provider.ID); err != nil {
+		t.Fatalf("price model: %v", err)
+	}
+	bot := f.bot("Budgeted", true)
+	if _, err := f.db.Pool.Exec(ctx, `UPDATE bots SET memory_enabled = true WHERE id = $1`, bot.ID); err != nil {
+		t.Fatalf("enable memory: %v", err)
+	}
+	conv := f.direct(bot)
+	// The conversation has already spent its whole budget.
+	if _, err := f.db.Pool.Exec(ctx, `UPDATE conversations SET budget_micros = 10, spent_micros = 10 WHERE id = $1`, conv.ID); err != nil {
+		t.Fatalf("exhaust budget: %v", err)
+	}
+	extractor := &memoryExtractor{engine: f.engine}
+	_, err := extractor.Extract(ctx, memory.ExtractRequest{
+		BotID: bot.ID, OwnerID: f.account, UserID: f.user, ConversationID: conv.ID,
+		System: "提取记忆", User: "以后周报都用表格格式",
+	})
+	if err == nil || !strings.Contains(err.Error(), "预算") {
+		t.Fatalf("a review must not spend past the conversation budget, got %v", err)
+	}
+	var spent, reserved int64
+	if err := f.db.Pool.QueryRow(ctx, `SELECT spent_micros, reserved_micros FROM conversations WHERE id = $1`, conv.ID).Scan(&spent, &reserved); err != nil {
+		t.Fatalf("read budget: %v", err)
+	}
+	if spent != 10 || reserved != 0 {
+		t.Fatalf("budget changed by a refused review: spent=%d reserved=%d", spent, reserved)
+	}
+
+	// With room left, the cost lands on the conversation.
+	if _, err := f.db.Pool.Exec(ctx, `UPDATE conversations SET budget_micros = 0, spent_micros = 0 WHERE id = $1`, conv.ID); err != nil {
+		t.Fatalf("reset budget: %v", err)
+	}
+	if _, err := extractor.Extract(ctx, memory.ExtractRequest{
+		BotID: bot.ID, OwnerID: f.account, UserID: f.user, ConversationID: conv.ID,
+		System: "提取记忆", User: strings.Repeat("以后周报都用表格格式。", 50),
+	}); err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if err := f.db.Pool.QueryRow(ctx, `SELECT spent_micros, reserved_micros FROM conversations WHERE id = $1`, conv.ID).Scan(&spent, &reserved); err != nil {
+		t.Fatalf("read budget: %v", err)
+	}
+	if spent <= 0 || reserved != 0 {
+		t.Fatalf("review cost must be settled on the conversation: spent=%d reserved=%d", spent, reserved)
 	}
 }
