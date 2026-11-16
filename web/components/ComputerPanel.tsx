@@ -7,11 +7,13 @@ import { Camera, History, Loader2, Monitor, Power, RefreshCw, RotateCcw, Shrink,
 import { api, ApiError } from "@/lib/api";
 import type { Bot, ComputerInfo } from "@/lib/types";
 import { BotAvatar } from "./BotAvatar";
+import { useLanguage } from "./LanguageProvider";
 import { StatusPill } from "./StatusPill";
 import { useConfirm } from "./ui/Confirm";
 import { useToast } from "./ui/Toast";
 
 export function ComputerPanel({ bot, onClose }: { bot: Bot; onClose: () => void }) {
+  const { t } = useLanguage();
   const { toast } = useToast();
   const { confirm, confirmElement } = useConfirm();
   const [info, setInfo] = useState<ComputerInfo | null>(null);
@@ -75,6 +77,22 @@ export function ComputerPanel({ bot, onClose }: { bot: Bot; onClose: () => void 
       setWorking(false);
     }
   }, [bot.id, refresh]);
+
+  const enable = useCallback(
+    async (profile: "browser" | "desktop") => {
+      setWorking(true);
+      setError(null);
+      try {
+        await api.startComputer(bot.id, profile);
+        await refresh();
+      } catch (err) {
+        setError(err instanceof ApiError ? err.message : t("computer.enableFailed"));
+      } finally {
+        setWorking(false);
+      }
+    },
+    [bot.id, refresh, t],
+  );
 
   const stop = useCallback(async () => {
     setWorking(true);
@@ -333,16 +351,59 @@ export function ComputerPanel({ bot, onClose }: { bot: Bot; onClose: () => void 
                 正在启动…
               </div>
             </>
+          ) : !info || info.profile === "none" || !info.profile ? (
+            <>
+              <Monitor className="h-12 w-12 text-white/25" />
+              <h3 className="mt-4 text-[15px] font-medium">{t("computer.noneTitle")}</h3>
+              <p className="mt-1.5 max-w-md text-[12px] leading-[18px] text-white/55">{t("computer.noneDesc")}</p>
+              <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void enable("browser")}
+                  disabled={working}
+                  className="rounded-full bg-white px-4 py-2 text-[13px] font-medium text-black transition hover:bg-white/90 disabled:opacity-50"
+                >
+                  {working ? <Loader2 className="sb-spin inline h-4 w-4" /> : t("computer.enableBrowser")}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void enable("desktop")}
+                  disabled={working}
+                  className="rounded-full border border-white/25 px-4 py-2 text-[13px] text-white/85 transition hover:bg-white/10 disabled:opacity-50"
+                >
+                  {t("computer.enableDesktop")}
+                </button>
+              </div>
+              <p className="mt-4 max-w-md text-[11.5px] leading-[17px] text-white/40">{t("computer.noneHint")}</p>
+            </>
+          ) : info.status === "error" ? (
+            <>
+              <Monitor className="h-12 w-12 text-red-300/50" />
+              <h3 className="mt-4 text-[15px] font-medium">{t("computer.errorTitle")}</h3>
+              <p className="mt-1.5 max-w-md text-[12px] leading-[18px] text-white/55">{t("computer.errorDesc")}</p>
+              <button
+                type="button"
+                onClick={() => void start()}
+                disabled={working}
+                className="mt-5 rounded-full bg-white px-4 py-2 text-[13px] font-medium text-black transition hover:bg-white/90 disabled:opacity-50"
+              >
+                {t("computer.retry")}
+              </button>
+            </>
           ) : (
-            <button
-              type="button"
-              onClick={() => void start()}
-              disabled={working}
-              className="text-[15px] font-medium text-white/90 transition hover:text-white disabled:opacity-50"
-              title="点击继续"
-            >
-              你离开期间屏幕已暂停
-            </button>
+            <>
+              <Monitor className="h-12 w-12 text-white/25" />
+              <h3 className="mt-4 text-[15px] font-medium">{t("computer.sleepTitle")}</h3>
+              <p className="mt-1.5 max-w-md text-[12px] leading-[18px] text-white/55">{t("computer.sleepDesc")}</p>
+              <button
+                type="button"
+                onClick={() => void start()}
+                disabled={working}
+                className="mt-5 rounded-full bg-white px-4 py-2 text-[13px] font-medium text-black transition hover:bg-white/90 disabled:opacity-50"
+              >
+                {working ? <Loader2 className="sb-spin inline h-4 w-4" /> : t("computer.start")}
+              </button>
+            </>
           )}
           {error && (
             <div className="mt-3 rounded-lg bg-red-500/15 px-3 py-2 text-[12px] text-red-300">

@@ -245,6 +245,35 @@ test.describe("runtime features in the browser", () => {
     }
   });
 
+  test("bot computer can be enabled and watched from its card", async ({ page }) => {
+    test.setTimeout(180_000);
+    await login(page);
+    const bot = await createBot(page.request, "电脑");
+    try {
+      const created = await page.request.post("/api/conversations", { data: { kind: "direct", bot_id: bot.id } });
+      const conv = (await created.json()).conversation.id as string;
+      await page.goto(`/?conv=${conv}`);
+      const card = page.locator("button", { hasText: /^Bot 的电脑/ });
+      await expect(card).toContainText("未启用", { timeout: 20_000 });
+      await card.click();
+      await expect(page.getByText("这个 Bot 还没有电脑")).toBeVisible();
+      await page.getByRole("button", { name: "启用浏览器电脑", exact: true }).click();
+      // The live view appears once the computer is up.
+      await expect(page.locator('iframe[title="Bot computer live view"]')).toBeVisible({ timeout: 120_000 });
+      await page.screenshot({ path: path.join(shotsDir, "computer-live.png") });
+      const computer = (await (await page.request.get(`/api/bots/${bot.id}/computer`)).json()).computer;
+      expect(computer.profile).toBe("browser");
+      expect(computer.status).toBe("running");
+      await page.keyboard.press("Escape");
+      await page.locator("button[aria-label]").filter({ has: page.locator("svg") }).first().waitFor();
+      await page.goto(`/?conv=${conv}`);
+      await expect(page.locator("button", { hasText: /^Bot 的电脑/ })).toContainText("运行中", { timeout: 30_000 });
+    } finally {
+      await page.request.post(`/api/bots/${bot.id}/computer/stop`, { data: {} });
+      await page.request.delete(`/api/bots/${bot.id}`, { data: {} });
+    }
+  });
+
   test("memory panel shows pins, archive and tidy", async ({ page }) => {
     await login(page);
     const content = `验收UI记忆-${tag}：周报用表格格式`;

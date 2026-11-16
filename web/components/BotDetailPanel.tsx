@@ -94,6 +94,7 @@ export function BotDetailPanel({
   routinesSection,
 }: Props) {
   const { t } = useLanguage();
+  const computerState = useComputerState(bot);
   const { toast } = useToast();
   const { confirm, confirmElement } = useConfirm();
   const [tab, setTab] = useState<"detail" | "library" | "files" | "computer">("detail");
@@ -924,8 +925,11 @@ export function BotDetailPanel({
                 <button type="button" className="sb-card sb-card-row w-full" onClick={onOpenComputer}>
                   <div className="min-w-0 flex-1">
                     <div className="text-[14px] leading-[20px]">{t("detail.botComputer")}</div>
-                    <div className="text-[12px] leading-[16px] text-[var(--sb-text-2)]">
-                      {bot.computer_profile === "none" ? t("detail.notEnabled") : t("detail.sleeping")}
+                    <div className="flex items-center gap-1.5 text-[12px] leading-[16px] text-[var(--sb-text-2)]">
+                      {computerState === "running" && (
+                        <span className="h-1.5 w-1.5 rounded-full bg-[var(--sb-success,#22c55e)]" aria-hidden />
+                      )}
+                      {t(`detail.computerState.${computerState}`)}
                     </div>
                   </div>
                   <span className="flex h-11 w-[68px] items-center justify-center overflow-hidden rounded-md bg-gradient-to-br from-[#d9d9d9] to-[#8f8f8f] text-white">
@@ -1405,4 +1409,42 @@ function activityKindLabel(kind: string): string {
   if (kind === "agent_reply") return "队友回复";
   if (kind === "routine") return "例程";
   return "回复";
+}
+
+type ComputerState = "none" | "running" | "starting" | "asleep" | "error";
+
+// useComputerState reads the computer's real state for the panel card. The
+// card used to say "asleep" for every bot with a computer, even while it was
+// running, which made the computer look broken.
+function useComputerState(bot: Bot | null | undefined): ComputerState {
+  const [state, setState] = useState<ComputerState>("none");
+  const botId = bot?.id;
+  const profile = bot?.computer_profile;
+  useEffect(() => {
+    if (!botId) {
+      setState("none");
+      return;
+    }
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const { computer } = await api.getComputer(botId);
+        if (cancelled) return;
+        if (!computer.profile || computer.profile === "none") setState("none");
+        else if (computer.status === "running") setState("running");
+        else if (computer.status === "error") setState("error");
+        else if (computer.status === "starting" || computer.desired_state === "running") setState("starting");
+        else setState("asleep");
+      } catch {
+        if (!cancelled) setState("asleep");
+      }
+    };
+    void load();
+    const timer = window.setInterval(() => void load(), 15000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [botId, profile]);
+  return state;
 }

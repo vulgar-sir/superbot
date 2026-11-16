@@ -532,10 +532,10 @@ export const api = {
   getComputer(botId: string) {
     return request<{ computer: ComputerInfo }>(`/api/bots/${botId}/computer`);
   },
-  startComputer(botId: string) {
+  startComputer(botId: string, profile?: "browser" | "desktop") {
     return request<{ computer: ComputerInfo }>(`/api/bots/${botId}/computer/start`, {
       method: "POST",
-      body: jsonBody({}),
+      body: jsonBody(profile ? { profile } : {}),
     });
   },
   stopComputer(botId: string) {

@@ -98,8 +98,32 @@ func (s *Server) handleStartComputer(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "bot not found")
 		return
 	}
+	// An optional {"profile": "browser"|"desktop"} enables or switches the
+	// computer in the same request, so a bot without one can be given one
+	// straight from its computer view.
+	var req struct {
+		Profile string `json:"profile"`
+	}
+	if r.ContentLength != 0 {
+		if err := decodeJSON(w, r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+	}
+	if profile := strings.TrimSpace(req.Profile); profile != "" && profile != bot.ComputerProfile {
+		if profile != "browser" && profile != "desktop" {
+			writeError(w, http.StatusBadRequest, "invalid_request", "profile must be browser or desktop")
+			return
+		}
+		if bot, err = s.db.SetBotComputerProfile(r.Context(), store.SetBotComputerProfileParams{
+			ID: botID, OwnerID: accountFrom(r), ComputerProfile: profile,
+		}); err != nil {
+			writeError(w, http.StatusInternalServerError, "internal", "could not enable the computer")
+			return
+		}
+	}
 	if bot.ComputerProfile == "" || bot.ComputerProfile == "none" {
-		writeError(w, http.StatusBadRequest, "invalid_request", "this bot has no computer profile; set it to browser or desktop first")
+		writeError(w, http.StatusBadRequest, "invalid_request", "this bot has no computer yet; choose browser or desktop")
 		return
 	}
 	workspace, err := s.db.SetWorkspaceDesiredState(r.Context(), store.SetWorkspaceDesiredStateParams{
