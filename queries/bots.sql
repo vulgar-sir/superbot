@@ -135,3 +135,6 @@ UPDATE bots
 SET computer_profile = $3, updated_at = now()
 WHERE id = $1 AND owner_id = $2
 RETURNING *;
+
+-- name: BotExists :one
+SELECT EXISTS (SELECT 1 FROM bots WHERE id = $1);

@@ -12,6 +12,17 @@ import (
 	"github.com/google/uuid"
 )
 
+const botExists = `-- name: BotExists :one
+SELECT EXISTS (SELECT 1 FROM bots WHERE id = $1)
+`
+
+func (q *Queries) BotExists(ctx context.Context, id uuid.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, botExists, id)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const createBot = `-- name: CreateBot :one
 INSERT INTO bots (
     owner_id, name, slug, avatar, description, system_prompt,

@@ -23,6 +23,7 @@ type Querier interface {
 	ArchiveMemory(ctx context.Context, arg ArchiveMemoryParams) (Memory, error)
 	ArchiveUnpinnedMemories(ctx context.Context, arg ArchiveUnpinnedMemoriesParams) ([]uuid.UUID, error)
 	AttachAttachmentToMessage(ctx context.Context, arg AttachAttachmentToMessageParams) error
+	BotExists(ctx context.Context, id uuid.UUID) (bool, error)
 	CancelCycleForCheckpoint(ctx context.Context, id uuid.UUID) error
 	CancelSubagentTask(ctx context.Context, arg CancelSubagentTaskParams) (int64, error)
 	// ClaimCycle 领取一个排队中的 cycle，或接管一个租约已过期的 running cycle。

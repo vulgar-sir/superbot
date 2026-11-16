@@ -37,13 +37,16 @@ func TestPathAllowlist(t *testing.T) {
 		{"DELETE", "/v1.47/containers/superbot-bot-abc123?force=1", 204},
 		{"POST", "/v1.47/containers/" + labelled + "/start", 204},
 		{"DELETE", "/v1.56/containers/" + labelled + "?force=1", 204},
+		// Listing is allowed but always narrowed to sandbox containers
+		// (see TestContainerListIsForcedToSandboxContainers).
+		{"GET", "/v1.47/containers/json?all=1", 200},
 
 		// Denied: not used by the sandbox.
 		{"GET", "/version", 403},
 		{"GET", "/v1.47/version", 403},
 		{"GET", "/v1.47/info", 403},
 		{"GET", "/v1.47/events", 403},
-		{"GET", "/v1.47/containers/json", 403},
+		{"GET", "/v1.47/containers/json?size=1", 403},
 		{"GET", "/v1.47/images/json", 403},
 		{"POST", "/v1.47/images/create?fromImage=alpine", 403},
 		{"POST", "/v1.47/build", 403},

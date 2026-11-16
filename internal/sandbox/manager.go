@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -62,6 +63,9 @@ type Manager struct {
 	// botLocks serializes container lifecycle work per bot so one slow bot
 	// (e.g. waiting for CDP) does not stall every other bot.
 	botLocks keyedMutex[uuid.UUID]
+
+	orphanMu        sync.Mutex
+	lastOrphanSweep time.Time
 }
 
 func New(cfg config.Config, db *store.DB, logger *slog.Logger) (*Manager, error) {
@@ -575,6 +579,7 @@ func (m *Manager) ProcessActions(ctx context.Context) {
 // Reconcile applies desired_state changes requested by the API.
 func (m *Manager) Reconcile(ctx context.Context) {
 	m.ProcessActions(ctx)
+	m.removeOrphans(ctx)
 	// Put computers to sleep after 30 minutes without bot activity; a new
 	// message touches the bot and wakes it on the next reconcile.
 	if n, err := m.db.StopIdleWorkspaces(ctx, "30 minutes"); err == nil && n > 0 {

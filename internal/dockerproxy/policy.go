@@ -45,6 +45,7 @@ const (
 	routeExecCreate
 	routeExecStart
 	routeExecInspect
+	routeContainerList
 )
 
 func (k routeKind) String() string {
@@ -69,6 +70,8 @@ func (k routeKind) String() string {
 		return "exec start"
 	case routeExecInspect:
 		return "exec inspect"
+	case routeContainerList:
+		return "container list"
 	default:
 		return "unknown"
 	}
@@ -77,6 +80,7 @@ func (k routeKind) String() string {
 // allowedQuery lists the query parameters each endpoint accepts; anything
 // else is refused. Endpoints not listed accept none.
 var allowedQuery = map[routeKind][]string{
+	routeContainerList:    {"all", "filters"},
 	routeContainerCreate:  {"name", "platform"},
 	routeContainerInspect: {"size"},
 	routeContainerStop:    {"t", "signal"},
@@ -146,6 +150,8 @@ func parseRoute(method string, u *url.URL) (*route, error) {
 		rt.kind = routePing
 	case len(segs) == 2 && segs[0] == "containers" && segs[1] == "create" && method == http.MethodPost:
 		rt.kind = routeContainerCreate
+	case len(segs) == 2 && segs[0] == "containers" && segs[1] == "json" && method == http.MethodGet:
+		rt.kind = routeContainerList
 	case (len(segs) == 2 || len(segs) == 3) && segs[0] == "containers":
 		action := ""
 		if len(segs) == 3 {
@@ -203,6 +209,8 @@ func (rt *route) setUpstream(target string) {
 		b.WriteString("/_ping")
 	case routeContainerCreate:
 		b.WriteString("/containers/create")
+	case routeContainerList:
+		b.WriteString("/containers/json")
 	case routeContainerInspect:
 		b.WriteString("/containers/" + target + "/json")
 	case routeContainerStart:
@@ -244,6 +252,11 @@ func checkQuery(rt *route, rawQuery string) (string, error) {
 		if len(vals) != 1 {
 			return "", deny("query parameter %q must appear once", key)
 		}
+	}
+	if rt.kind == routeContainerList {
+		// Whatever the caller asked for, only sandbox containers are listed:
+		// the worker uses this to find computers whose bot was deleted.
+		values.Set("filters", `{"label":{"`+botIDLabel+`":true}}`)
 	}
 	if rt.kind == routeContainerCreate {
 		name := values.Get("name")
