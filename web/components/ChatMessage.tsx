@@ -23,7 +23,13 @@ import { useToast } from "./ui/Toast";
 import { api } from "@/lib/api";
 import { cn, formatTime } from "@/lib/format";
 import { useLanguage } from "./LanguageProvider";
-import { CheckpointDivider, GoalNudgeDivider, SubagentResultCard } from "./SystemNotices";
+import {
+  CheckpointDivider,
+  GoalNudgeDivider,
+  RoutineTriggerDivider,
+  SubagentResultCard,
+  isRoutineTrigger,
+} from "./SystemNotices";
 import { localizeServerText } from "@/lib/serverText";
 import type { Attachment, Bot, Message, MessageReaction, Poll } from "@/lib/types";
 
@@ -231,6 +237,10 @@ export function ChatMessage({
         {message.content}
       </div>
     );
+  }
+
+  if (isRoutineTrigger(message)) {
+    return <RoutineTriggerDivider message={message} />;
   }
 
   const copy = async () => {

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { ChevronDown, ChevronRight, Flag, Layers, Loader2, Workflow } from "lucide-react";
+import { ChevronDown, ChevronRight, Clock, Flag, Layers, Loader2, Workflow } from "lucide-react";
 
 import { api, ApiError } from "@/lib/api";
 import { cn, formatTime } from "@/lib/format";
@@ -225,6 +225,62 @@ export function GoalNudgeDivider({ message }: { message: Message }) {
         >
           <div className="mb-1 text-[var(--sb-text-3)]">{t("chat.goalNudge.sent")}</div>
           {injectText}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** A group routine posted this message on its schedule; nobody typed it. */
+export function isRoutineTrigger(message: Message): boolean {
+  return message.sender_type === "user" && message.metadata?.kind === "routine";
+}
+
+// The server prefixes the routine prompt with a "【例程：name】" line.
+const ROUTINE_PREFIX = /^(?:【例程[:：]([^】\n]*)】|\[Routine:([^\]\n]*)\])[ \t]*\r?\n?/;
+
+/**
+ * Thin divider for a scheduled routine firing in a group. The prompt it sent
+ * to the group is available on demand.
+ */
+export function RoutineTriggerDivider({ message }: { message: Message }) {
+  const { t } = useLanguage();
+  const [expanded, setExpanded] = useState(false);
+  const match = message.content.match(ROUTINE_PREFIX);
+  const metaName =
+    typeof message.metadata?.routine_name === "string" ? message.metadata.routine_name.trim() : "";
+  const name = metaName || (match?.[1] ?? match?.[2] ?? "").trim();
+  const prompt = (match ? message.content.slice(match[0].length) : message.content).trim();
+  const panelID = `routine-trigger-${message.id}`;
+
+  return (
+    <div className="flex flex-col items-center py-1" data-message-id={message.id} data-kind="routine">
+      <button
+        type="button"
+        onClick={() => prompt && setExpanded((prev) => !prev)}
+        aria-expanded={prompt ? expanded : undefined}
+        aria-controls={prompt ? panelID : undefined}
+        title={prompt ? t("chat.routine.open") : undefined}
+        className={cn("sb-agent-card", !prompt && "cursor-default")}
+      >
+        <span className="h-px min-w-[24px] flex-1 bg-[var(--sb-border)]" aria-hidden />
+        <Clock className="h-3.5 w-3.5 shrink-0" aria-hidden />
+        <span className="min-w-0 truncate">
+          {name ? t("chat.routine.label", { name }) : t("chat.routine.labelNoName")}
+        </span>
+        <span className="shrink-0 text-[11px] text-[var(--sb-text-4)]">{formatTime(message.created_at)}</span>
+        {prompt && (
+          <ChevronRight className={cn("h-3 w-3 shrink-0 opacity-50 transition", expanded && "rotate-90")} aria-hidden />
+        )}
+        <span className="h-px min-w-[24px] flex-1 bg-[var(--sb-border)]" aria-hidden />
+      </button>
+      {expanded && prompt && (
+        <div
+          id={panelID}
+          className="max-h-[320px] w-full max-w-[520px] overflow-y-auto whitespace-pre-wrap break-words rounded-lg bg-[var(--sb-hover)] px-2.5 py-1.5 text-[11px] leading-[16px] text-[var(--sb-text-2)]"
+        >
+          <div className="mb-1 text-[var(--sb-text-3)]">{t("chat.routine.sent")}</div>
+          {prompt}
         </div>
       )}
     </div>

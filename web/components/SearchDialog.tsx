@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Activity as ActivityIcon, ArrowUpRight, Bot as BotIcon, CheckSquare, Clock, Loader2, MessageSquare, Plug, Search, Settings, Users } from "lucide-react";
+import { Activity as ActivityIcon, ArrowUpRight, Bot as BotIcon, CheckSquare, Loader2, MessageSquare, Plug, Search, Settings, Users } from "lucide-react";
 
 import { api, ApiError } from "@/lib/api";
 import type { Activity, Bot } from "@/lib/types";
@@ -66,14 +66,6 @@ const COMMANDS: Command[] = [
     href: "/tasks",
     keywords: "task tasks 任务 项目 看板",
     icon: <CheckSquare className="h-4 w-4" />,
-  },
-  {
-    id: "routines",
-    label: "例程",
-    description: "定时任务与自动开工",
-    href: "/routines",
-    keywords: "routine cron 例程 定时",
-    icon: <Clock className="h-4 w-4" />,
   },
   {
     id: "activity",

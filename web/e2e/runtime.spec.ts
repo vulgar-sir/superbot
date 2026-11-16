@@ -129,6 +129,45 @@ test.describe("runtime features in the browser", () => {
     }
   });
 
+  test("group routines are listed in the group's info panel", async ({ page }) => {
+    await login(page);
+    const lead = await createBot(page.request, "例程群主");
+    const member = await createBot(page.request, "例程成员");
+    const teamResponse = await page.request.post("/api/teams", {
+      data: {
+        name: `验收UI-例程群-${tag}`,
+        mode: "group",
+        config: { primary_bot_id: lead.id },
+        bot_ids: [lead.id, member.id],
+      },
+    });
+    const team = (await teamResponse.json()).team as { id: string };
+    let routineId = "";
+    try {
+      const routineName = `验收UI例程-${tag}`;
+      const created = await page.request.post("/api/routines", {
+        data: { team_id: team.id, name: routineName, cron: "0 9 * * *", prompt: "汇报今天的进度。", enabled: false },
+      });
+      expect(created.ok(), await created.text()).toBeTruthy();
+      routineId = ((await created.json()).routine as { id: string }).id;
+
+      const conv = await conversationForTeam(page.request, team.id);
+      await page.goto(`/?conv=${conv}`);
+      const section = page.locator('section[data-section="group-routines"]');
+      if (!(await section.isVisible().catch(() => false))) {
+        await page.getByRole("button", { name: /详情|信息|Details/ }).first().click().catch(() => undefined);
+      }
+      await expect(section.getByText(routineName)).toBeVisible({ timeout: 20_000 });
+      await expect(section.getByText("已停用")).toBeVisible();
+      await page.screenshot({ path: path.join(shotsDir, "group-routines.png") });
+    } finally {
+      if (routineId) await page.request.delete(`/api/routines/${routineId}`, { data: {} });
+      await page.request.delete(`/api/teams/${team.id}`, { data: {} });
+      await page.request.delete(`/api/bots/${lead.id}`, { data: {} });
+      await page.request.delete(`/api/bots/${member.id}`, { data: {} });
+    }
+  });
+
   test("side question is answered without touching the conversation", async ({ page }) => {
     await login(page);
     const bot = await createBot(page.request, "旁路");

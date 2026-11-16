@@ -3,12 +3,14 @@ package routines
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/robfig/cron/v3"
 
 	"superbot/internal/events"
@@ -248,6 +250,10 @@ func (s *Service) createRoutineRun(ctx context.Context, routine store.Routine) e
 	if maxRounds > 12 {
 		maxRounds = 12
 	}
+	convID, err := s.routineConversation(ctx, team)
+	if err != nil {
+		return err
+	}
 
 	tx, err := s.db.Pool.Begin(ctx)
 	if err != nil {
@@ -256,51 +262,90 @@ func (s *Service) createRoutineRun(ctx context.Context, routine store.Routine) e
 	defer tx.Rollback(ctx)
 	q := s.db.WithTx(tx)
 
-	conv, err := q.CreateConversation(ctx, store.CreateConversationParams{
-		TeamID:    &routine.TeamID,
-		Kind:      "team",
-		Title:     "[定时] " + routine.Name,
-		CreatedBy: team.OwnerID,
+	meta, _ := json.Marshal(map[string]string{
+		"routine_id":   routine.ID.String(),
+		"kind":         "routine",
+		"routine_name": routine.Name,
 	})
-	if err != nil {
-		return fmt.Errorf("create conversation: %w", err)
-	}
 	msg, err := q.CreateMessage(ctx, store.CreateMessageParams{
-		ConversationID: conv.ID,
+		ConversationID: convID,
 		SenderType:     "user",
-		Content:        routine.Prompt,
-		Metadata:       json.RawMessage(`{"routine_id":"` + routine.ID.String() + `"}`),
+		Content:        "【例程：" + routine.Name + "】\n" + routine.Prompt,
+		Metadata:       meta,
 	})
 	if err != nil {
 		return fmt.Errorf("create message: %w", err)
 	}
-	cycle, err := q.CreateCycle(ctx, store.CreateCycleParams{
-		ConversationID:   conv.ID,
-		TriggerMessageID: msg.ID,
-		MaxRounds:        maxRounds,
-	})
-	if err != nil {
-		return fmt.Errorf("create cycle: %w", err)
+	// A group that is already working receives the routine like any other
+	// message sent mid-turn: the running cycle picks it up before its next
+	// model call, or answers it in a follow-up turn.
+	var cycleID *uuid.UUID
+	if _, activeErr := q.GetActiveCycle(ctx, convID); errors.Is(activeErr, pgx.ErrNoRows) {
+		cycle, err := q.CreateCycle(ctx, store.CreateCycleParams{
+			ConversationID:   convID,
+			TriggerMessageID: msg.ID,
+			MaxRounds:        maxRounds,
+		})
+		if err != nil {
+			return fmt.Errorf("create cycle: %w", err)
+		}
+		if err := q.SetMessageCycle(ctx, store.SetMessageCycleParams{ID: msg.ID, CycleID: &cycle.ID}); err != nil {
+			return fmt.Errorf("attach cycle: %w", err)
+		}
+		msg.CycleID = &cycle.ID
+		cycleID = &cycle.ID
+	} else if activeErr != nil {
+		return fmt.Errorf("get active cycle: %w", activeErr)
 	}
-	if err := q.SetMessageCycle(ctx, store.SetMessageCycleParams{ID: msg.ID, CycleID: &cycle.ID}); err != nil {
-		return fmt.Errorf("attach cycle: %w", err)
-	}
-	msg.CycleID = &cycle.ID
-	if _, err := events.Append(ctx, q, conv.ID, &cycle.ID, nil, events.TypeMessageCreated, map[string]any{"message": msg}); err != nil {
+	if _, err := events.Append(ctx, q, convID, cycleID, nil, events.TypeMessageCreated, map[string]any{"message": msg}); err != nil {
 		return err
 	}
-	if _, err := events.Append(ctx, q, conv.ID, &cycle.ID, nil, events.TypeCycleUpdated, map[string]any{
-		"cycle_id": cycle.ID,
-		"status":   cycle.Status,
-		"routine":  routine.ID,
-	}); err != nil {
-		return err
+	if cycleID != nil {
+		if _, err := events.Append(ctx, q, convID, cycleID, nil, events.TypeCycleUpdated, map[string]any{
+			"cycle_id": *cycleID,
+			"status":   "queued",
+			"routine":  routine.ID,
+		}); err != nil {
+			return err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
-	if err := s.bus.Notify(ctx, conv.ID); err != nil {
-		s.logger.Warn("notify routine conversation failed", "conversation_id", conv.ID, "error", err)
+	if err := s.bus.Notify(ctx, convID); err != nil {
+		s.logger.Warn("notify routine conversation failed", "conversation_id", convID, "error", err)
 	}
 	return nil
+}
+
+// routineConversation is where a team routine posts: the team's own room,
+// so results appear in the group chat the user already has open instead of
+// in a new conversation per run. A team without a room gets its most recent
+// conversation, or a new one that becomes its room.
+func (s *Service) routineConversation(ctx context.Context, team store.Team) (uuid.UUID, error) {
+	if team.RoomConversationID != nil {
+		if conv, err := s.db.GetConversation(ctx, *team.RoomConversationID); err == nil {
+			return conv.ID, nil
+		}
+	}
+	if recent, err := s.db.ListTeamConversations(ctx, store.ListTeamConversationsParams{
+		TeamID: &team.ID, Limit: 1,
+	}); err == nil && len(recent) > 0 {
+		return recent[0].ID, nil
+	}
+	conv, err := s.db.CreateConversation(ctx, store.CreateConversationParams{
+		TeamID:    &team.ID,
+		Kind:      "team",
+		Title:     team.Name,
+		CreatedBy: team.OwnerID,
+	})
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("create team conversation: %w", err)
+	}
+	if err := s.db.SetTeamRoomConversation(ctx, store.SetTeamRoomConversationParams{
+		ID: team.ID, OwnerID: team.OwnerID, RoomConversationID: &conv.ID,
+	}); err != nil {
+		s.logger.Warn("attach room conversation failed", "team_id", team.ID, "error", err)
+	}
+	return conv.ID, nil
 }

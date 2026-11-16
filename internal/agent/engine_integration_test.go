@@ -730,3 +730,57 @@ func TestIntegrationReclaimedPipelineResumesAtUnfinishedStage(t *testing.T) {
 		t.Fatalf("stage one must not run again after the restart: %v", speakers)
 	}
 }
+
+func TestIntegrationTeamRoutinePostsIntoTheGroupItself(t *testing.T) {
+	f := newFixture(t, 128_000, 8_000)
+	ctx := context.Background()
+	lead := f.bot("RoutineLead", true)
+	config, _ := json.Marshal(map[string]any{"primary_bot_id": lead.ID.String()})
+	team, err := f.db.CreateTeam(ctx, store.CreateTeamParams{
+		OwnerID: f.account, Name: "routine-" + uuid.NewString()[:6], Mode: "group", Config: config,
+	})
+	if err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+	if err := f.db.AddTeamBot(ctx, store.AddTeamBotParams{TeamID: team.ID, BotID: lead.ID, Role: "member"}); err != nil {
+		t.Fatalf("add team bot: %v", err)
+	}
+	room, err := f.engine.chatSvc.CreateTeamConversation(ctx, f.account, team.ID, "")
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	past := time.Now().Add(-time.Minute)
+	routine, err := f.db.CreateRoutine(ctx, store.CreateRoutineParams{
+		TeamID: team.ID, Name: "每日站会", Cron: "0 9 * * *", Prompt: "汇报昨天的进展", Enabled: true, NextRunAt: &past,
+	})
+	if err != nil {
+		t.Fatalf("create routine: %v", err)
+	}
+	f.engine.routineSvc.ReconcileDue(ctx)
+	f.drain(2)
+
+	var count int
+	if err := f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM conversations WHERE team_id = $1`, team.ID).Scan(&count); err != nil {
+		t.Fatalf("count conversations: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("a routine must not open a new conversation per run, team has %d", count)
+	}
+	var trigger *store.Message
+	for _, msg := range f.messages(room) {
+		if messageKind(msg) == "routine" {
+			trigger = &msg
+		}
+	}
+	if trigger == nil || !strings.Contains(trigger.Content, "汇报昨天的进展") {
+		t.Fatalf("the routine was not posted into the group's room: %+v", f.messages(room))
+	}
+	replies := botReplies(f.messages(room))
+	if len(replies) != 1 || *replies[0].SenderBotID != lead.ID {
+		t.Fatalf("the group lead should answer the routine in the room, got %d replies", len(replies))
+	}
+	updated, err := f.db.GetRoutineForOwner(ctx, store.GetRoutineForOwnerParams{ID: routine.ID, OwnerID: f.account})
+	if err == nil && updated.NextRunAt != nil && !updated.NextRunAt.After(time.Now()) {
+		t.Fatal("the next run must be scheduled in the future")
+	}
+}

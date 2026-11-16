@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, Bot, CalendarDays, CheckSquare, Clock, FileText, LogOut, Mail, MessageSquare, Package, Puzzle, ScrollText, Settings2, Users } from "lucide-react";
+import { Activity, Bot, CalendarDays, CheckSquare, FileText, LogOut, Mail, MessageSquare, Package, Puzzle, ScrollText, Settings2, Users } from "lucide-react";
 import { Logo } from "./Logo";
 import { useLanguage } from "./LanguageProvider";
 import { cn } from "@/lib/format";
@@ -18,7 +18,6 @@ const items = [
   { href: "/documents", key: "nav.documents", icon: FileText },
   { href: "/calendar", key: "nav.calendar", icon: CalendarDays },
   { href: "/email", key: "nav.email", icon: Mail },
-  { href: "/routines", key: "nav.routines", icon: Clock },
   { href: "/audit", key: "nav.audit", icon: ScrollText },
   { href: "/store", key: "nav.store", icon: Package },
   { href: "/settings", key: "nav.settings", icon: Settings2 },
@@ -76,7 +75,7 @@ export function Rail({ user, onLogout }: { user: User; onLogout: () => void }) {
         </button>
       </div>
     </nav>
-    <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-13 border-t border-[var(--sb-border)] bg-[var(--sb-pane)] pb-[env(safe-area-inset-bottom)] md:hidden">
+    <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-12 border-t border-[var(--sb-border)] bg-[var(--sb-pane)] pb-[env(safe-area-inset-bottom)] md:hidden">
       {items.map((item) => {
         const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
         const Icon = item.icon;

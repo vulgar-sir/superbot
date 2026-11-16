@@ -627,7 +627,7 @@ function formatSchedule(schedule: string, timezone?: string): string {
   return trimmed;
 }
 
-function formatNext(value: string, timezone?: string): string {
+export function formatNext(value: string, timezone?: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
   const options: Intl.DateTimeFormatOptions = {

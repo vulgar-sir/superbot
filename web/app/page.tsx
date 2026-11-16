@@ -51,6 +51,8 @@ import { ToolGroup } from "@/components/ToolCard";
 import { Composer } from "@/components/Composer";
 import { BotDetailPanel } from "@/components/BotDetailPanel";
 import { GoalChip, GoalPanel, useGroupGoal } from "@/components/GoalPanel";
+import { GroupRoutineList } from "@/components/GroupRoutineList";
+import { isRoutineTrigger } from "@/components/SystemNotices";
 import { SidePanel, parseSideCommand, useSideChats } from "@/components/SidePanel";
 import { SettingsScreen } from "@/app/settings/page";
 import { HelpDialog } from "@/components/HelpDialog";
@@ -171,8 +173,9 @@ function groupPosition(messages: Message[], index: number): "first" | "middle" |
   const message = messages[index];
   const prev = messages[index - 1];
   const next = messages[index + 1];
-  const prevSame = prev && prev.sender_type !== "system" && sameSender(prev, message);
-  const nextSame = next && next.sender_type !== "system" && sameSender(next, message);
+  // Notice rows (system messages, routine triggers) break a run of bubbles.
+  const prevSame = prev && prev.sender_type !== "system" && !isRoutineTrigger(prev) && sameSender(prev, message);
+  const nextSame = next && next.sender_type !== "system" && !isRoutineTrigger(next) && sameSender(next, message);
   if (prevSame && nextSame) return "middle";
   if (prevSame) return "last";
   if (nextSame) return "first";
@@ -404,12 +407,13 @@ export default function HomePage() {
             }
             return [...prev, message];
           });
-          // Checkpoint markers and goal checks are bookkeeping, not something
-          // new to read.
+          // Checkpoint markers, goal checks and routine triggers are
+          // bookkeeping, not something new to read.
           if (
             !stickRef.current &&
             message.metadata?.kind !== "context_checkpoint" &&
-            message.metadata?.kind !== "goal_nudge"
+            message.metadata?.kind !== "goal_nudge" &&
+            !isRoutineTrigger(message)
           ) {
             setNewMessages((prev) => prev + 1);
           }
@@ -1165,9 +1169,11 @@ export default function HomePage() {
   // After a cycle gave up, "Retry" re-sends the last user message through the
   // normal send path. Messages with attachments are left to the user to
   // re-send, since their files belong to the original message.
+  // A routine trigger is not the user's own words, so it is not re-sent as one.
   const retryCandidate = useMemo(() => {
     const last = [...messages].reverse().find((message) => message.sender_type === "user");
     if (!last || last.id.startsWith("pending-") || (last.attachments ?? []).length > 0) return null;
+    if (isRoutineTrigger(last)) return null;
     return last;
   }, [messages]);
 
@@ -2047,6 +2053,9 @@ export default function HomePage() {
           }}
           goalSection={activeTeam ? <GoalPanel ctl={goalCtl} bots={bots} /> : undefined}
           goalFocusSignal={goalFocusSignal}
+          routinesSection={
+            activeTeam ? <GroupRoutineList teamId={activeTeam.id} teamName={activeTeam.name} /> : undefined
+          }
         />
       )}
 

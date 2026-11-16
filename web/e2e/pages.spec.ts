@@ -847,7 +847,6 @@ test.describe("superbot management pages", () => {
       ["activity", "动态"],
       ["bots", "Bot"],
       ["teams", "群聊"],
-      ["routines", "例程"],
       ["extensions", "连接应用"],
       ["tasks", "任务"],
       ["documents", "文档与 Canvas"],

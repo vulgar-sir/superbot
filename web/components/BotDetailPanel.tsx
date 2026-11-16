@@ -70,6 +70,8 @@ type Props = {
   goalSection?: React.ReactNode;
   /** Bump to switch to the details tab and bring the goal section into view. */
   goalFocusSignal?: number;
+  /** Group routines section, shown right below the goal section of a group. */
+  routinesSection?: React.ReactNode;
 };
 
 export function BotDetailPanel({
@@ -89,6 +91,7 @@ export function BotDetailPanel({
   onRefresh,
   goalSection,
   goalFocusSignal = 0,
+  routinesSection,
 }: Props) {
   const { t } = useLanguage();
   const { toast } = useToast();
@@ -646,6 +649,7 @@ export function BotDetailPanel({
             {team ? (
               <>
                 {goalSection}
+                {routinesSection}
                 <div className="sb-info-label">{t("detail.members")}</div>
                 <div className="sb-card overflow-hidden">
                   {team.bots.map((entry, index) => (
