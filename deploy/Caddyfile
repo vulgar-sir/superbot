@@ -1,0 +1,25 @@
+:80 {
+	handle /api/* {
+		reverse_proxy api:8080 {
+			flush_interval -1
+			# {hostport} keeps non-default ports (e.g. :32608), which WebAuthn
+			# needs to build an origin that matches the browser exactly.
+			header_up X-Forwarded-Host {hostport}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+	handle /healthz {
+		reverse_proxy api:8080
+	}
+	handle_path /desktop/* {
+		root * /srv/desktop-release
+		file_server
+	}
+	handle /dex/* {
+		reverse_proxy dex:5556
+	}
+	handle {
+		reverse_proxy web:3000
+	}
+	encode zstd gzip
+}

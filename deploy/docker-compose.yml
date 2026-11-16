@@ -1,0 +1,145 @@
+name: superbot
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg18
+    container_name: superbot-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: superbot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: superbot
+    volumes:
+      - superbot_pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U superbot -d superbot"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  dex:
+    # Docker Hub is unreachable from this host; GHCR is reachable.
+    image: ghcr.io/dexidp/dex:v2.41.1
+    restart: unless-stopped
+    command: ["dex", "serve", "/etc/dex/config.yaml"]
+    volumes:
+      - ../dex/config.yaml:/etc/dex/config.yaml:ro
+    depends_on:
+      - api
+
+  stt:
+    image: fedirz/faster-whisper-server:latest-cpu
+    restart: unless-stopped
+    environment:
+      WHISPER__MODEL: Systran/faster-whisper-small
+      WHISPER__INFERENCE_DEVICE: cpu
+      # Skip language auto-detection: the bundled ctranslate2 model can
+      # return a null language payload and fail inside faster-whisper.
+      WHISPER__DEFAULT_LANGUAGE: zh
+      HF_ENDPOINT: https://hf-mirror.com
+    volumes:
+      - superbot_stt_models:/root/.cache/huggingface
+
+  tts:
+    build:
+      context: ./images/tts
+      dockerfile: Dockerfile
+    image: superbot/tts:latest
+    restart: unless-stopped
+    environment:
+      HF_ENDPOINT: https://hf-mirror.com
+      PIPER_VOICE: zh_CN-huayan-medium
+    volumes:
+      - superbot_tts_voices:/voices
+
+  embedding:
+    build:
+      context: ./images/embedding
+      dockerfile: Dockerfile
+    image: superbot/embedding:latest
+    restart: unless-stopped
+    environment:
+      # The HF mirror serves plain HTTP well but not the Xet CAS protocol;
+      # disabling Xet avoids stalled multi-gigabyte model downloads.
+      HF_HUB_DISABLE_XET: "1"
+    volumes:
+      - superbot_embedding_models:/models
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/healthz', timeout=5)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 600s
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    image: superbot/api:latest
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      SUPERBOT_HTTP_ADDR: 0.0.0.0:8080
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:8080"
+      - "40000:40000/udp"
+    volumes:
+      - ../data:/srv/superbot/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - default
+      - superbot_sandbox
+
+  worker:
+    image: superbot/api:latest
+    restart: unless-stopped
+    command: ["worker"]
+    env_file:
+      - ../.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ../data:/srv/superbot/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - default
+      - superbot_sandbox
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.web
+    image: superbot/web:latest
+    restart: unless-stopped
+    depends_on:
+      - api
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    ports:
+      - "32608:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./desktop-release:/srv/desktop-release:ro
+    depends_on:
+      - api
+      - web
+
+volumes:
+  superbot_pgdata:
+  superbot_embedding_models:
+  superbot_stt_models:
+  superbot_tts_voices:
+
+networks:
+  superbot_sandbox:
+    name: superbot_sandbox

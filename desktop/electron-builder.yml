@@ -1,0 +1,24 @@
+appId: com.superbot.desktop
+productName: superbot
+directories:
+  output: release
+files:
+  - out/**/*
+  - package.json
+win:
+  target:
+    - nsis
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+mac:
+  target:
+    - dmg
+    - zip
+  category: public.app-category.productivity
+linux:
+  target:
+    - AppImage
+publish:
+  provider: generic
+  url: http://202.189.8.109:32608/desktop/

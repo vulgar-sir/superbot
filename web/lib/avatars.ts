@@ -1,0 +1,31 @@
+export const AVATAR_SHAPES = [
+  "blob",
+  "cloud",
+  "square",
+  "circle",
+  "flower",
+  "drop",
+  "hexagon",
+  "pill",
+  "star",
+  "oval",
+  "arch",
+  "shield",
+  "burst",
+  "wave",
+  "pebble",
+] as const;
+
+export const AVATAR_COLORS = [
+  ["black", "#1c1c1c"],
+  ["brown", "#9d6937"],
+  ["red", "#e72e3b"],
+  ["orange", "#ee620d"],
+  ["yellow", "#da830e"],
+  ["green", "#10ab61"],
+  ["cyan", "#10a693"],
+  ["blue", "#1680f3"],
+  ["violet", "#8351e4"],
+  ["magenta", "#e52f8b"],
+  ["gray", "#6f737a"],
+] as const;

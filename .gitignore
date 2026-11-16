@@ -1,0 +1,40 @@
+# Go
+/bin/
+*.exe
+*.test
+*.out
+coverage.*
+
+# Secrets
+.env
+.env.*
+!.env.example
+!.env.production.example
+deepseek key和服务器地址----不准放入git仓库.txt
+*.pem
+*.key
+/secrets/
+
+# Runtime data
+/data/
+/tmp/
+
+# Frontend
+web/node_modules/
+web/.next/
+web/out/
+web/test-results/
+web/playwright-report/
+web/.env*.local
+*.tsbuildinfo
+
+# Desktop
+desktop/node_modules/
+desktop/out/
+desktop/release/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

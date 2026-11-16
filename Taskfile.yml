@@ -1,0 +1,70 @@
+version: '3'
+
+dotenv: ['.env']
+
+vars:
+  GO: go
+  COMPOSE_DEV: docker compose -f deploy/docker-compose.dev.yml
+
+tasks:
+  default:
+    desc: List tasks
+    cmds:
+      - task --list-all
+
+  dev-infra:
+    desc: Start local Postgres (Docker)
+    cmds:
+      - '{{.COMPOSE_DEV}} up -d postgres'
+
+  dev-infra-down:
+    desc: Stop local Postgres
+    cmds:
+      - '{{.COMPOSE_DEV}} down'
+
+  migrate:
+    desc: Apply database migrations
+    cmds:
+      - '{{.GO}} run ./cmd/superbot migrate'
+
+  sqlc:
+    desc: Regenerate type-safe SQL code
+    cmds:
+      - sqlc generate
+
+  api:
+    desc: Run API server
+    cmds:
+      - '{{.GO}} run ./cmd/superbot serve'
+
+  worker:
+    desc: Run worker
+    cmds:
+      - '{{.GO}} run ./cmd/superbot worker'
+
+  web:
+    desc: Run Next.js dev server
+    dir: web
+    cmds:
+      - npm run dev
+
+  test:
+    desc: Run Go tests
+    cmds:
+      - '{{.GO}} test ./...'
+
+  vet:
+    desc: Run go vet
+    cmds:
+      - '{{.GO}} vet ./...'
+
+  check:
+    desc: Lint and test backend
+    cmds:
+      - '{{.GO}} vet ./...'
+      - '{{.GO}} test ./...'
+
+  build:
+    desc: Build the superbot binary
+    cmds:
+      - '{{.GO}} build -o bin/superbot.exe ./cmd/superbot'

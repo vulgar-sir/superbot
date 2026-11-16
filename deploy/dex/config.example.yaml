@@ -1,0 +1,21 @@
+# Copy to /srv/superbot/dex/config.yaml (the compose file mounts ../dex).
+# Never commit the real file: it contains the client secret and password hash.
+issuer: http://YOUR_HOST/dex
+storage:
+  type: memory
+web:
+  http: 0.0.0.0:5556
+  allowedOrigins:
+    - http://YOUR_HOST
+staticClients:
+  - id: superbot
+    redirectURIs:
+      - http://YOUR_HOST/api/auth/oidc/callback
+    name: superbot
+    secret: REPLACE_WITH_RANDOM_SECRET
+enablePasswordDB: true
+staticPasswords:
+  - email: YOUR_ADMIN_EMAIL
+    hash: "REPLACE_WITH_BCRYPT_HASH"
+    username: admin
+    userID: 00000000-0000-0000-0000-000000000001
