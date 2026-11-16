@@ -9,6 +9,7 @@ import { Menu } from "./ui/Menu";
 import { Modal } from "./ui/Modal";
 import { useConfirm } from "./ui/Confirm";
 import { useToast } from "./ui/Toast";
+import { copyText } from "@/lib/clipboard";
 
 const presets = [
   { label: "每天 9:00", value: "0 9 * * *" },
@@ -558,7 +559,7 @@ export function BotRoutineList({ bot }: { bot: Bot }) {
                   data-size="sm"
                   onClick={() => {
                     const url = `${window.location.origin}/api/hooks/routines/${editing.trigger_token}`;
-                    void navigator.clipboard.writeText(url).then(
+                    void copyText(url).then(
                       () => toast("已复制 Webhook 地址", "success"),
                       () => toast("复制失败，请手动选择", "danger"),
                     );

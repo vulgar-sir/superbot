@@ -157,6 +157,11 @@ func (s *Service) ReadContent(ctx context.Context, ownerID, botID uuid.UUID, nam
 		if strings.EqualFold(skill.Name, strings.TrimSpace(name)) {
 			data, err := os.ReadFile(skill.FilesPath)
 			if err != nil {
+				// Built-in skills ship with the binary; a missing file on
+				// disk must not make them unreadable.
+				if body, ok := builtinBody(skill); ok {
+					return body, nil
+				}
 				return "", fmt.Errorf("read skill file: %w", err)
 			}
 			if len(data) > 32*1024 {

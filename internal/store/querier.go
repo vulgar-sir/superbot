@@ -395,6 +395,7 @@ type Querier interface {
 	SetApprovalCheckpoint(ctx context.Context, arg SetApprovalCheckpointParams) error
 	SetBotAccess(ctx context.Context, arg SetBotAccessParams) error
 	SetBotAvatar(ctx context.Context, arg SetBotAvatarParams) (Bot, error)
+	SetBotComputerProfile(ctx context.Context, arg SetBotComputerProfileParams) (Bot, error)
 	SetBotCreator(ctx context.Context, arg SetBotCreatorParams) error
 	SetBotHidden(ctx context.Context, arg SetBotHiddenParams) (Bot, error)
 	SetBotMarkedUnread(ctx context.Context, arg SetBotMarkedUnreadParams) error

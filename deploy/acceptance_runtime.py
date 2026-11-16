@@ -538,6 +538,43 @@ def scenario_browser(world):
     return evidence
 
 
+def scenario_browser_on_demand(world):
+    """A bot without a computer asked to use the browser enables one and browses."""
+    bot = world.bot("百度", "")
+    conv = world.direct(bot)
+    send(conv, "使用浏览器打开百度，搜索今天的新闻")
+    wait_idle(conv, 360)
+    texts = bot_texts(conv)
+    tools = sql(f"select ti.name, ti.status from tool_invocations ti join runs r on r.id = ti.run_id "
+                f"where r.conversation_id = '{conv}' order by ti.created_at")
+    profile = sql(f"select computer_profile from bots where id = '{bot['id']}'")[0][0]
+    names = [name for name, _ in tools]
+    container = "superbot-bot-" + bot["id"].replace("-", "")[:12]
+    subprocess.run(["docker", "rm", "-f", container], capture_output=True, timeout=60)
+    evidence = (f"profile={profile} tool_calls={len(tools)} tools={names} "
+                f"last={texts[-1][-160:] if texts else ''!r}")
+    assert ("computer_enable", "done") in [tuple(t) for t in tools], "the bot never enabled its browser: " + evidence
+    assert profile == "browser", evidence
+    assert any(name == "browser_open" for name in names), "no browser_open call: " + evidence
+    probing = [name for name in names if name in ("shell", "python")]
+    assert len(probing) <= 2, "the bot still probed the offline sandbox: " + evidence
+    return evidence
+
+
+def scenario_builtin_skill(world):
+    """Built-in skills are readable even when their files were lost."""
+    bot = world.bot("技能", "")
+    conv = world.direct(bot)
+    send(conv, "请调用 skill_read 读取 box-desktop 这个技能，然后告诉我它的第一个标题是什么。")
+    wait_idle(conv, 180)
+    tools = sql(f"select ti.name, ti.status, coalesce(ti.error, '') from tool_invocations ti join runs r on r.id = ti.run_id "
+                f"where r.conversation_id = '{conv}' and ti.name = 'skill_read'")
+    texts = bot_texts(conv)
+    evidence = f"skill_read={tools} last={texts[-1][-100:] if texts else ''!r}"
+    assert tools and all(status == "done" for _, status, _ in tools), evidence
+    return evidence
+
+
 SCENARIOS = {
     "interjection": scenario_interjection,
     "checkpoint": scenario_checkpoint,
@@ -550,6 +587,8 @@ SCENARIOS = {
     "sandbox": scenario_sandbox_mounts,
     "proxy": scenario_docker_proxy,
     "browser": scenario_browser,
+    "browser_on_demand": scenario_browser_on_demand,
+    "skill": scenario_builtin_skill,
 }
 
 

@@ -7,6 +7,7 @@ import { api, ApiError } from "@/lib/api";
 import type { Connector, GitHubDeviceStart } from "@/lib/types";
 import { Modal } from "./ui/Modal";
 import { useToast } from "./ui/Toast";
+import { copyText } from "@/lib/clipboard";
 
 const providers = [
   { key: "github", label: "GitHub" },
@@ -281,7 +282,7 @@ export function ConnectorDialog({
                   <button
                     type="button"
                     onClick={() => {
-                      void navigator.clipboard.writeText(device.user_code);
+                      void copyText(device.user_code);
                       toast("设备码已复制", "success");
                     }}
                     className="text-[var(--sb-text-2)] transition hover:text-[var(--sb-text)]"

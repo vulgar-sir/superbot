@@ -214,6 +214,37 @@ test.describe("runtime features in the browser", () => {
     await page.screenshot({ path: path.join(shotsDir, "checkpoint-dialog.png") });
   });
 
+  test("copy conversation id works over plain HTTP", async ({ page }) => {
+    await login(page);
+    const bot = await createBot(page.request, "复制");
+    try {
+      const created = await page.request.post("/api/conversations", { data: { kind: "direct", bot_id: bot.id } });
+      const conv = (await created.json()).conversation.id as string;
+      await page.goto(`/?conv=${conv}`);
+      // The deployment is served over HTTP: no secure context, so the async
+      // Clipboard API is missing and the fallback path is what gets tested.
+      expect(await page.evaluate(() => window.isSecureContext)).toBe(false);
+      await page.evaluate(() => {
+        (window as unknown as { __copied: string | null }).__copied = null;
+        document.addEventListener(
+          "copy",
+          () => {
+            (window as unknown as { __copied: string | null }).__copied = document.getSelection()?.toString() ?? null;
+          },
+          true,
+        );
+      });
+      await page.locator("aside").getByText(bot.name, { exact: true }).first().click({ button: "right" });
+      await page.getByRole("menuitem", { name: "复制对话 ID" }).click();
+      await expect(page.getByText("对话 ID 已复制")).toBeVisible();
+      await expect(page.getByText("复制失败")).toHaveCount(0);
+      const copied = await page.evaluate(() => (window as unknown as { __copied: string | null }).__copied);
+      expect(copied).toBe(conv);
+    } finally {
+      await page.request.delete(`/api/bots/${bot.id}`, { data: {} });
+    }
+  });
+
   test("memory panel shows pins, archive and tidy", async ({ page }) => {
     await login(page);
     const content = `验收UI记忆-${tag}：周报用表格格式`;

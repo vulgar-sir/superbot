@@ -13,6 +13,7 @@ import { BotAvatar } from "@/components/BotAvatar";
 import { useToast } from "@/components/ui/Toast";
 import { useLanguage } from "@/components/LanguageProvider";
 import { timeAgo } from "@/lib/format";
+import { copyText } from "@/lib/clipboard";
 
 export default function ActivityPage() {
   const router = useRouter();
@@ -250,7 +251,7 @@ export default function ActivityPage() {
                   key: "copy",
                   label: "复制摘要",
                   onSelect: () => {
-                    void navigator.clipboard.writeText(ctx.activity.summary);
+                    void copyText(ctx.activity.summary);
                     toast("已复制", "success");
                   },
                 },

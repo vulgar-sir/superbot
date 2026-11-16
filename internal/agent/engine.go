@@ -508,6 +508,11 @@ func (e *Engine) runBotTurnSeeded(ctx context.Context, conv store.Conversation, 
 		if err := e.db.UpdateRunStep(ctx, store.UpdateRunStepParams{ID: run.ID, Step: int32(step)}); err != nil {
 			e.logger.Warn("update run step failed", "run_id", run.ID, "error", err)
 		}
+		// The tool set can grow mid-turn (computer_enable adds the browser
+		// tools), so it is read again before every model call.
+		if modelRow == nil || modelRow.SupportsTools {
+			toolDefs = registry.Definitions()
+		}
 		if fitted, changed := fitLoopMessages(messages, pinned, budget); changed {
 			e.logger.Info("tool loop context compacted", "run_id", run.ID, "step", step,
 				"before", EstimateMessagesTokens(messages), "after", EstimateMessagesTokens(fitted))
@@ -869,6 +874,10 @@ func (e *Engine) buildRegistry(ctx context.Context, root *os.Root, bot store.Bot
 			}
 			cleanup = toolset.Close
 		}
+	}
+	if bot.ComputerProfile == "none" && e.sandbox != nil && !disabled["computer_enable"] {
+		own := bot
+		registry.Register(&computerEnableTool{engine: e, bot: &own, registry: registry})
 	}
 	if (bot.ComputerProfile == "browser" || bot.ComputerProfile == "desktop") && e.sandbox != nil {
 		session, err := e.browserSession(ctx, bot)

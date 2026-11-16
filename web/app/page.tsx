@@ -65,6 +65,7 @@ import { Menu } from "@/components/ui/Menu";
 import { ShareMenu } from "@/components/ShareMenu";
 import { NotificationCenter } from "@/components/NotificationCenter";
 import { useLanguage } from "@/components/LanguageProvider";
+import { copyText } from "@/lib/clipboard";
 
 function hashString(value: string): number {
   let hash = 5381;
@@ -1429,7 +1430,7 @@ export default function HomePage() {
     if (!activeBot) return;
     try {
       const result = await api.createBotShare(activeBot.id);
-      await navigator.clipboard.writeText(`${window.location.origin}/share/${result.token}`);
+      await copyText(`${window.location.origin}/share/${result.token}`);
       toast("分享链接已复制", "success");
     } catch (err) {
       toast(err instanceof ApiError ? err.message : "创建分享链接失败", "danger");
@@ -1462,7 +1463,7 @@ export default function HomePage() {
   const copyLink = useCallback(async () => {
     if (!activeId) return;
     try {
-      await navigator.clipboard.writeText(`${window.location.origin}/?conv=${activeId}`);
+      await copyText(`${window.location.origin}/?conv=${activeId}`);
       toast("链接已复制", "success");
     } catch {
       toast("复制失败", "danger");

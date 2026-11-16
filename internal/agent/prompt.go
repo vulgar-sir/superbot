@@ -31,6 +31,7 @@ func BuildSystemPrompt(bot store.Bot, workspace, sharedContainerPath, sharedHost
 		b.WriteString("- 交付物、代码、设计文档请写入共享目录（shared_* 工具或 shell），否则队友看不到。\n")
 		b.WriteString("- workspace_* 只属于你自己；shared_* 对所有团队成员可见。\n")
 	}
+	b.WriteString(computerSection(bot.ComputerProfile))
 	if len(toolNames) > 0 {
 		b.WriteString("\n可用工具：")
 		b.WriteString(strings.Join(toolNames, ", "))
@@ -44,4 +45,21 @@ func BuildSystemPrompt(bot store.Bot, workspace, sharedContainerPath, sharedHost
 	b.WriteString("- 避免重复队友已经完成的结论；只补充新信息或推进任务。\n")
 	b.WriteString("- 完成用户任务后直接给出结果，不要为了说话而说话。\n")
 	return b.String()
+}
+
+// computerSection tells the bot what its computer can and cannot do, so it
+// picks the right tool instead of probing the sandbox or inventing settings.
+func computerSection(profile string) string {
+	switch profile {
+	case "browser", "desktop":
+		return "\n## 你的电脑\n" +
+			"你有一台可以联网的电脑，带 Chromium 浏览器。操作网页用 browser_open 打开，用 browser_snapshot 读取页面和元素编号，再用 browser_click / browser_type 操作，" +
+			"需要给用户看时用 browser_screenshot。用户可以在右侧「Bot 的电脑」里实时观看和接管。\n"
+	default:
+		return "\n## 你的电脑\n" +
+			"你现在没有启用电脑：shell / python 运行在一个不能联网的沙箱里，也没有可用的浏览器，不要在沙箱里尝试联网或启动浏览器。\n" +
+			"- 只读地查网页、搜索资料：直接用 fetch_url 或 web_search。\n" +
+			"- 用户要求用浏览器打开、操作网页（点击、输入、登录、截图）时：先调用 computer_enable 启用浏览器电脑，下一步就能用 browser_* 工具。\n" +
+			"- 不要让用户去找不存在的设置；做不到的事如实说明。\n"
+	}
 }

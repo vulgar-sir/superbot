@@ -154,6 +154,7 @@ func (s *Service) EnsureBuiltins(ctx context.Context, ownerID uuid.UUID) error {
 			_ = s.db.SetSkillDescriptionEn(ctx, store.SetSkillDescriptionEnParams{
 				ID: existing.ID, OwnerID: ownerID, DescriptionEn: builtin.DescriptionEn,
 			})
+			s.restoreBuiltinFile(ctx, ownerID, existing, builtin)
 			continue
 		}
 		skill, err := s.db.CreateSkill(ctx, store.CreateSkillParams{
@@ -177,8 +178,7 @@ func (s *Service) EnsureBuiltins(ctx context.Context, ownerID uuid.UUID) error {
 			_, _ = s.db.DeleteSkill(ctx, store.DeleteSkillParams{ID: skill.ID, OwnerID: ownerID})
 			return err
 		}
-		body := fmt.Sprintf("---\nname: %s\ndescription: %s\nversion: 1\n---\n\n%s\n",
-			builtin.Name, builtin.Description, strings.TrimSpace(builtin.Content))
+		body := renderBuiltin(builtin)
 		path := filepath.Join(dir, "SKILL.md")
 		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 			_, _ = s.db.DeleteSkill(ctx, store.DeleteSkillParams{ID: skill.ID, OwnerID: ownerID})
@@ -191,4 +191,44 @@ func (s *Service) EnsureBuiltins(ctx context.Context, ownerID uuid.UUID) error {
 		}
 	}
 	return nil
+}
+
+func renderBuiltin(builtin Builtin) string {
+	return fmt.Sprintf("---\nname: %s\ndescription: %s\nversion: 1\n---\n\n%s\n",
+		builtin.Name, builtin.Description, strings.TrimSpace(builtin.Content))
+}
+
+// builtinBody returns the shipped content of a built-in skill.
+func builtinBody(skill store.Skill) (string, bool) {
+	if skill.Source != "builtin" {
+		return "", false
+	}
+	for _, builtin := range Builtins {
+		if builtin.Name == skill.Name {
+			return renderBuiltin(builtin), true
+		}
+	}
+	return "", false
+}
+
+// restoreBuiltinFile rewrites a built-in skill's file when it went missing,
+// for example after the data directory was moved or remounted. A file that
+// exists is left alone, so user edits survive.
+func (s *Service) restoreBuiltinFile(ctx context.Context, ownerID uuid.UUID, skill store.Skill, builtin Builtin) {
+	path := skill.FilesPath
+	if path == "" {
+		path = filepath.Join(s.dataDir, "skills", skill.ID.String(), "SKILL.md")
+	}
+	if _, err := os.Stat(path); err == nil {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return
+	}
+	if err := os.WriteFile(path, []byte(renderBuiltin(builtin)), 0o644); err != nil {
+		return
+	}
+	if skill.FilesPath == "" {
+		_, _ = s.db.SetSkillFilesPath(ctx, store.SetSkillFilesPathParams{ID: skill.ID, OwnerID: ownerID, FilesPath: path})
+	}
 }

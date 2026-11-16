@@ -32,6 +32,7 @@ import {
 } from "./SystemNotices";
 import { localizeServerText } from "@/lib/serverText";
 import type { Attachment, Bot, Message, MessageReaction, Poll } from "@/lib/types";
+import { copyText } from "@/lib/clipboard";
 
 export function ChatMessage({
   message,
@@ -103,7 +104,7 @@ export function ChatMessage({
 
   const copyRequestID = async () => {
     try {
-      await navigator.clipboard.writeText(message.run_id ?? message.id);
+      await copyText(message.run_id ?? message.id);
       toast("请求 ID 已复制", "success");
     } catch {
       toast("复制失败", "danger");
@@ -245,7 +246,7 @@ export function ChatMessage({
 
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(message.content);
+      await copyText(message.content);
       toast("已复制", "success");
     } catch {
       toast("复制失败", "danger");

@@ -10,6 +10,7 @@ import { useLanguage } from "./LanguageProvider";
 import { Markdown } from "./Markdown";
 import { useConfirm } from "./ui/Confirm";
 import { useToast } from "./ui/Toast";
+import { copyText } from "@/lib/clipboard";
 
 /** A side chat as listed; `local` marks one that never reached the server. */
 export type SideEntry = SideChat & { local?: boolean };
@@ -228,7 +229,7 @@ export function SidePanel({
 
   const copyAnswer = async (entry: SideEntry) => {
     try {
-      await navigator.clipboard.writeText(entry.answer);
+      await copyText(entry.answer);
       toast(t("side.copied"), "success");
     } catch {
       toast(t("side.copyFailed"), "danger");

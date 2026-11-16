@@ -407,6 +407,59 @@ func (q *Queries) SetBotAvatar(ctx context.Context, arg SetBotAvatarParams) (Bot
 	return i, err
 }
 
+const setBotComputerProfile = `-- name: SetBotComputerProfile :one
+UPDATE bots
+SET computer_profile = $3, updated_at = now()
+WHERE id = $1 AND owner_id = $2
+RETURNING id, owner_id, name, slug, avatar, description, system_prompt, provider_id, model, params, capabilities, tool_policy, memory_enabled, computer_profile, created_at, updated_at, section_id, position, title, avatar_shape, avatar_color, pinned, last_activity_at, proactivity, kind, created_by_bot_id, hidden, marked_unread, account_id, visibility, created_by_user_id, team_settings
+`
+
+type SetBotComputerProfileParams struct {
+	ID              uuid.UUID `json:"id"`
+	OwnerID         uuid.UUID `json:"owner_id"`
+	ComputerProfile string    `json:"computer_profile"`
+}
+
+func (q *Queries) SetBotComputerProfile(ctx context.Context, arg SetBotComputerProfileParams) (Bot, error) {
+	row := q.db.QueryRow(ctx, setBotComputerProfile, arg.ID, arg.OwnerID, arg.ComputerProfile)
+	var i Bot
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.Slug,
+		&i.Avatar,
+		&i.Description,
+		&i.SystemPrompt,
+		&i.ProviderID,
+		&i.Model,
+		&i.Params,
+		&i.Capabilities,
+		&i.ToolPolicy,
+		&i.MemoryEnabled,
+		&i.ComputerProfile,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.SectionID,
+		&i.Position,
+		&i.Title,
+		&i.AvatarShape,
+		&i.AvatarColor,
+		&i.Pinned,
+		&i.LastActivityAt,
+		&i.Proactivity,
+		&i.Kind,
+		&i.CreatedByBotID,
+		&i.Hidden,
+		&i.MarkedUnread,
+		&i.AccountID,
+		&i.Visibility,
+		&i.CreatedByUserID,
+		&i.TeamSettings,
+	)
+	return i, err
+}
+
 const setBotCreator = `-- name: SetBotCreator :exec
 UPDATE bots
 SET created_by_bot_id = $3

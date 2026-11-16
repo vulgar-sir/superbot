@@ -44,6 +44,7 @@ import { useToast } from "./ui/Toast";
 import { useLanguage } from "./LanguageProvider";
 import { cn } from "@/lib/format";
 import type { Account, Bot, SidebarData, SidebarSection, Team, User } from "@/lib/types";
+import { copyText as writeClipboard } from "@/lib/clipboard";
 
 type Props = {
   user: User;
@@ -424,7 +425,7 @@ export function GrokSidebar({
   const copyText = useCallback(
     async (text: string, label: string) => {
       try {
-        await navigator.clipboard.writeText(text);
+        await writeClipboard(text);
         toast(label, "success");
       } catch {
         toast("复制失败", "danger");
@@ -1454,7 +1455,7 @@ export function GrokSidebar({
                   const result = await api.createAccountInvitation(active.id, inviteEmail.trim());
                   const link = `${window.location.origin}${result.url}`;
                   setInviteLink(link);
-                  await navigator.clipboard.writeText(link).catch(() => undefined);
+                  await writeClipboard(link).catch(() => undefined);
                   toast("邀请链接已复制", "success");
                   setInviteEmail("");
                 } catch (err) {
