@@ -134,6 +134,32 @@ func (q *Queries) GetRun(ctx context.Context, id uuid.UUID) (Run, error) {
 	return i, err
 }
 
+const interruptOrphanedRuns = `-- name: InterruptOrphanedRuns :execrows
+UPDATE runs r
+SET status = 'interrupted',
+    warning = CASE WHEN r.warning = '' THEN '本轮已结束，运行记录未正常收尾' ELSE r.warning END,
+    finished_at = now(),
+    updated_at = now()
+WHERE r.status IN ('queued', 'running')
+  AND r.updated_at < now() - interval '15 minutes'
+  AND NOT EXISTS (
+      SELECT 1 FROM cycles c
+      WHERE c.id = r.cycle_id AND c.status IN ('queued', 'running')
+  )
+`
+
+// A run is left 'running' when its cycle moved on without finishing it: the
+// cycle paused for a tool approval (the resume starts a new run) or a worker
+// died mid-run and the cycle was later failed or finished. Once the cycle is
+// no longer active, nothing will ever finish such a run.
+func (q *Queries) InterruptOrphanedRuns(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, interruptOrphanedRuns)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const listRunsByCycle = `-- name: ListRunsByCycle :many
 SELECT id, cycle_id, conversation_id, bot_id, status, attempt, step, usage_in, usage_out, cost_micros, warning, error, started_at, finished_at, created_at, updated_at FROM runs
 WHERE cycle_id = $1

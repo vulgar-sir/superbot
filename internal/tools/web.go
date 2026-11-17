@@ -69,7 +69,7 @@ func NewSearchTool(service *search.Service, ownerID uuid.UUID) *SearchTool {
 
 func (t *SearchTool) Name() string { return "web_search" }
 func (t *SearchTool) Description() string {
-	return "Search the web through the configured search provider (Bocha or Tavily) and return titles, URLs and snippets. Use fetch_url to read a promising result."
+	return "Search the web through the configured search provider (Bocha or Tavily; without one, a Bing web search) and return titles, URLs and snippets. Use fetch_url to read a promising result."
 }
 func (t *SearchTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"count":{"type":"integer","description":"default 5, max 10"}},"required":["query"]}`)
@@ -93,6 +93,9 @@ func (t *SearchTool) Execute(ctx context.Context, raw json.RawMessage) (Result, 
 		return Result{Content: "no results"}, nil
 	}
 	var b strings.Builder
+	if results[0].Engine == search.EngineBing {
+		b.WriteString("（账户未配置搜索 Provider，以下结果来自 Bing 网页搜索兜底，摘要较短；引用前请用 fetch_url 打开确认。）\n\n")
+	}
 	for i, item := range results {
 		fmt.Fprintf(&b, "%d. %s\n", i+1, item.Title)
 		fmt.Fprintf(&b, "   %s\n", item.URL)

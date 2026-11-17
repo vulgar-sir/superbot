@@ -678,7 +678,144 @@ def scenario_builtin_skill(world):
     return evidence
 
 
+def tool_rows(conv):
+    return sql(f"select ti.name, ti.status, left(coalesce(ti.error, ''), 160) from tool_invocations ti "
+               f"join runs r on r.id = ti.run_id where r.conversation_id = '{conv}' order by ti.created_at")
+
+
+def upload(filename, content, mime):
+    """Upload an attachment the way the composer does (multipart)."""
+    boundary = "----accept" + uuid.uuid4().hex
+    body = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n"
+            f"Content-Type: {mime}\r\n\r\n").encode() + content + f"\r\n--{boundary}--\r\n".encode()
+    request = urllib.request.Request(BASE + "/api/attachments", data=body, method="POST", headers={
+        "Content-Type": f"multipart/form-data; boundary={boundary}", "Origin": BASE,
+    })
+    with opener.open(request, timeout=60) as response:
+        return json.loads(response.read())["attachment"]
+
+
+def docx_bytes(paragraphs):
+    """A minimal valid .docx with the given paragraphs."""
+    import io
+    import zipfile
+    from xml.sax.saxutils import escape
+    body = "".join(f"<w:p><w:r><w:t>{escape(text)}</w:t></w:r></w:p>" for text in paragraphs)
+    parts = {
+        "[Content_Types].xml": '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+            '</Types>',
+        "_rels/.rels": '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
+            '</Relationships>',
+        "word/document.xml": '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>'
+            + body + '</w:body></w:document>',
+    }
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, text in parts.items():
+            archive.writestr(name, text)
+    return buffer.getvalue()
+
+
+def scenario_documents(world):
+    """A document a bot writes lands in its Library, and the id it reports is real."""
+    bot = world.bot("文档", "你是写作助手。")
+    title = f"验收文档-{TAG}"
+    conv = world.direct(bot)
+    try:
+        send(conv, f"请用 create_document 写一份标题为「{title}」的文档，内容是三条开题答辩注意事项。写好后告诉我文档 ID。")
+        wait_idle(conv, 240)
+        docs = sql(f"select id from documents where title = '{title}'")
+        items = sql(f"select kind, metadata->>'source_id', length(content) from library_items "
+                    f"where bot_id = '{bot['id']}' and metadata->>'source' = 'document'")
+        texts = bot_texts(conv)
+        evidence = f"documents={docs} library={items} last={texts[-1][-160:] if texts else ''!r}"
+        assert len(docs) == 1, "the bot did not create the document: " + evidence
+        doc_id = docs[0][0]
+        assert any(row[1] == doc_id and int(row[2]) > 20 for row in items), "the document is not in the bot's Library: " + evidence
+        assert texts and doc_id in texts[-1], "the reply does not carry the real document id: " + evidence
+        return evidence
+    finally:
+        sql_exec(f"delete from documents where title = '{title}';")
+
+
+def scenario_attachment_template(world):
+    """A Word template sent in chat reaches the bot's computer and is filled in with python-docx."""
+    bot = world.bot("模板", "你是论文助手，会用电脑处理 Word 文件。")
+    headings = ["一、选题依据", "二、研究内容", "三、进度安排"]
+    template = f"1.验收开题模板-{TAG}.docx"
+    output = f"验收报告-{TAG}.docx"
+    attachment = upload(template, docx_bytes(["本科毕业论文开题报告"] + headings),
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    conv = world.direct(bot)
+    call("POST", f"/api/conversations/{conv}/messages", {
+        "content": (f"附件是开题报告模板。先告诉我模板里有哪几个一级标题。然后在你的电脑里用 python-docx 以这个模板为底稿，"
+                    f"在每个标题下面各加一句话，保存为 /workspace/{output}。"),
+        "client_msg_id": uuid.uuid4().hex, "attachment_ids": [attachment["id"]],
+    })
+    wait_idle(conv, 480)
+    workspace = DATA_DIR / "workspaces" / bot["id"]
+    uploaded = workspace / "uploads" / template
+    produced = workspace / output
+    tools = tool_rows(conv)
+    library = sql(f"select kind, title, length(content), position('选题依据' in content) > 0 from library_items "
+                  f"where bot_id = '{bot['id']}' and title = '{output}'")
+    texts = bot_texts(conv)
+    mount = subprocess.run(["docker", "exec", "superbot-bot-" + bot["id"].replace("-", "")[:12], "sh", "-c",
+                            "mount | grep ' /tmp '; python --version"], capture_output=True, text=True, timeout=30)
+    evidence = (f"uploaded={uploaded.exists()} produced={produced.exists()} library={library} "
+                f"tmp={mount.stdout.strip()!r} tools={tools} last={texts[-1][-200:] if texts else ''!r}")
+    assert uploaded.exists(), "the attachment was not placed in the computer: " + evidence
+    assert texts and all(h.split("、")[1] in texts[-1] for h in headings), "the reply does not list the template headings: " + evidence
+    assert produced.exists(), "the filled-in report was not written: " + evidence
+    assert library and library[0][3] == "t", "the report is not in the Library with its text: " + evidence
+    assert not any("failed to map segment" in row[2] or "unknown tool" in row[2] for row in tools), evidence
+    assert "noexec" not in mount.stdout and "Python 3" in mount.stdout, evidence
+    return evidence
+
+
+def scenario_search_fallback(world):
+    """Without a search provider, web_search still answers through Bing."""
+    providers = sql("select count(*) from providers where type = 'search' and enabled")
+    bot = world.bot("搜索", "你是研究助手。")
+    conv = world.direct(bot)
+    send(conv, "请用 web_search 搜索「CNNIC 中国互联网络发展状况统计报告」，告诉我前两个结果的标题和网址。")
+    wait_idle(conv, 240)
+    tools = tool_rows(conv)
+    texts = bot_texts(conv)
+    evidence = f"search_providers={providers[0][0]} tools={tools} last={texts[-1][-200:] if texts else ''!r}"
+    assert any(name == "web_search" and status == "done" for name, status, _ in tools), "web_search did not return results: " + evidence
+    assert texts and "http" in texts[-1], "the reply carries no result link: " + evidence
+    return evidence
+
+
+def scenario_step_limit(world):
+    """A turn that runs out of tool steps ends with a progress report, not a placeholder."""
+    bot = world.bot("步数", "你是工程助手，用户让你运行命令时用 shell 工具逐条运行。")
+    sql_exec(f"update bots set params = '{{\"max_steps\": 2}}'::jsonb where id = '{bot['id']}';")
+    conv = world.direct(bot)
+    send(conv, "请逐条运行这五个命令，每条单独调用一次 shell 工具，不要合并：date；uname -a；whoami；pwd；ls /。全部跑完后汇总。")
+    wait_idle(conv, 300)
+    texts = bot_texts(conv)
+    runs = sql(f"select warning from runs where conversation_id = '{conv}' order by created_at")
+    evidence = f"runs={runs} last={texts[-1][-240:] if texts else ''!r}"
+    assert any(row[0] == "达到工具调用步数上限" for row in runs), "the step limit was not reached: " + evidence
+    assert texts and "模型未生成最终回复" not in texts[-1], "the turn ended on the placeholder: " + evidence
+    assert "继续" in texts[-1], "the report does not tell the user how to go on: " + evidence
+    return evidence
+
+
 SCENARIOS = {
+    "documents": scenario_documents,
+    "attachment": scenario_attachment_template,
+    "search": scenario_search_fallback,
+    "steplimit": scenario_step_limit,
     "interjection": scenario_interjection,
     "checkpoint": scenario_checkpoint,
     "side": scenario_side,

@@ -46,3 +46,20 @@ SET status = 'interrupted',
     updated_at = now()
 WHERE cycle_id = $1
   AND status IN ('queued', 'running');
+
+-- A run is left 'running' when its cycle moved on without finishing it: the
+-- cycle paused for a tool approval (the resume starts a new run) or a worker
+-- died mid-run and the cycle was later failed or finished. Once the cycle is
+-- no longer active, nothing will ever finish such a run.
+-- name: InterruptOrphanedRuns :execrows
+UPDATE runs r
+SET status = 'interrupted',
+    warning = CASE WHEN r.warning = '' THEN '本轮已结束，运行记录未正常收尾' ELSE r.warning END,
+    finished_at = now(),
+    updated_at = now()
+WHERE r.status IN ('queued', 'running')
+  AND r.updated_at < now() - interval '15 minutes'
+  AND NOT EXISTS (
+      SELECT 1 FROM cycles c
+      WHERE c.id = r.cycle_id AND c.status IN ('queued', 'running')
+  );

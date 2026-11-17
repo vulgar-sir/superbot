@@ -33,6 +33,7 @@ import (
 	"superbot/internal/mailbox"
 	"superbot/internal/mcpservice"
 	"superbot/internal/memory"
+	"superbot/internal/officetext"
 	"superbot/internal/phone"
 	"superbot/internal/routines"
 	"superbot/internal/sandbox"
@@ -461,7 +462,7 @@ func (e *Engine) runBotTurnSeeded(ctx context.Context, conv store.Conversation, 
 				provider: provider, providerRow: providerRow, modelRow: modelRow, modelName: bot.Model,
 			})
 		}
-		messages, pinned, lastSeenOrdinal, err = e.buildMessages(ctx, bot, conv, modelRow, registry, instruction, sharedHostPath, sharedContainerPath, isolated)
+		messages, pinned, lastSeenOrdinal, err = e.buildMessages(ctx, bot, conv, modelRow, registry, instruction, sharedHostPath, sharedContainerPath, isolated, root)
 		if err != nil {
 			return outcome, err
 		}
@@ -502,6 +503,8 @@ func (e *Engine) runBotTurnSeeded(ctx context.Context, conv store.Conversation, 
 	streamRetries := 0
 	flattened := false
 	continuations := 0
+	idsChecked := false
+	stoppedEarly := false
 	for step := startStep; step <= maxSteps; step++ {
 		if err := ctx.Err(); err != nil {
 			return outcome, context.Cause(ctx)
@@ -620,9 +623,28 @@ func (e *Engine) runBotTurnSeeded(ctx context.Context, conv store.Conversation, 
 					llm.TextMessage(llm.RoleUser, "【系统】上一段输出因长度上限被截断。请从中断处直接接着写，不要重复已经写过的内容，也不要道歉。"))
 				continue
 			}
+			if !idsChecked {
+				// A reply that cites an id nothing produced is claiming a
+				// document or file that does not exist. Give the model one
+				// chance to create it for real or to correct the reply.
+				if ids := fabricatedIDs(turn.Text, messages); len(ids) > 0 {
+					idsChecked = true
+					e.logger.Warn("reply cites ids no tool produced; asking the model to verify",
+						"run_id", run.ID, "bot_id", bot.ID, "ids", ids)
+					messages = append(messages,
+						llm.AssistantMessage(turn.Text, turn.Reasoning, nil),
+						llm.TextMessage(llm.RoleUser, fabricatedIDsNotice(ids)))
+					textAll.Reset()
+					if step >= maxSteps {
+						maxSteps = step + 2
+					}
+					continue
+				}
+			}
 			if turn.FinishReason == llm.FinishLength {
 				outcome.Warning = "回复因输出长度上限被截断"
 			}
+			stoppedEarly = true
 			break
 		}
 		for i := range turn.ToolCalls {
@@ -633,7 +655,15 @@ func (e *Engine) runBotTurnSeeded(ctx context.Context, conv store.Conversation, 
 		messages = append(messages, llm.AssistantMessage(turn.Text, turn.Reasoning, turn.ToolCalls))
 		for i := range turn.ToolCalls {
 			call := turn.ToolCalls[i]
-			if e.toolNeedsApproval(ctx, bot, call) {
+			if truncatedToolCall(call, turn.FinishReason) {
+				e.logger.Warn("tool call arguments cut off by the output limit; not running it",
+					"run_id", run.ID, "tool", call.Name, "args_bytes", len(call.Arguments))
+				messages = append(messages, llm.ToolResultMessage(call.ID, call.Name, truncatedToolCallNotice, true))
+				continue
+			}
+			// A tool the model made up is not run, so there is nothing to
+			// approve; it gets the unknown-tool error and a hint instead.
+			if registry.Has(call.Name) && e.toolNeedsApproval(ctx, bot, call) {
 				e.closeProgress(ctx, cycle.ID)
 				if err := e.pauseForApproval(ctx, conv, cycle, run, bot, turn.ToolCalls[i:], messages, step); err != nil {
 					return outcome, err
@@ -652,11 +682,20 @@ func (e *Engine) runBotTurnSeeded(ctx context.Context, conv store.Conversation, 
 			outcome.Warning = "达到工具调用步数上限"
 		}
 	}
+	if !stoppedEarly && outcome.Warning == "达到工具调用步数上限" {
+		// The step budget ran out mid-task. Rather than ending on an empty
+		// placeholder, ask once more, without tools, for a progress report
+		// the user can act on.
+		if summary := e.stepLimitSummary(ctx, provider, conv, cycle, run, bot, modelRow, messages, toolDefs, params, maxTokens, outcome); summary != "" {
+			textAll.WriteString("\n\n")
+			textAll.WriteString(summary)
+		}
+	}
 	e.closeProgress(ctx, cycle.ID)
 
 	finalText := llm.StripArtifacts(strings.TrimSpace(textAll.String()))
 	if finalText == "" {
-		if outcome.Warning != "" {
+		if outcome.Warning == "达到工具调用步数上限" {
 			finalText = "（达到工具调用步数上限，模型未生成最终回复）"
 		} else {
 			finalText = "（模型未返回文本）"
@@ -726,6 +765,15 @@ func (e *Engine) checkWeeklyBudget(ctx context.Context, accountID uuid.UUID) err
 	return nil
 }
 
+// documentIndexer keeps a nil indexer nil as an interface, so tools can test
+// for it instead of calling through a nil pointer.
+func documentIndexer(indexer *libindex.Indexer) tools.DocumentIndexer {
+	if indexer == nil {
+		return nil
+	}
+	return indexer
+}
+
 func (e *Engine) buildRegistry(ctx context.Context, root *os.Root, bot store.Bot, sharedRoot *os.Root, conv store.Conversation, cycle store.Cycle) (*tools.Registry, func()) {
 	teamID := conv.TeamID
 	registry := tools.NewRegistry()
@@ -774,7 +822,7 @@ func (e *Engine) buildRegistry(ctx context.Context, root *os.Root, bot store.Bot
 		tools.NewSaveToLibraryTool(e.db, bot.OwnerID, bot.ID, conv.ID),
 		tools.NewImageGenerateTool(e.imagegen, e.db, bot.OwnerID, bot.ID, e.cfg.DataDir),
 		tools.NewListLibraryTool(e.db, bot.OwnerID, bot.ID),
-		tools.NewReadLibraryTool(e.db, bot.OwnerID),
+		tools.NewReadLibraryTool(e.db, bot.OwnerID, root),
 		tools.NewLocalExecTool(e.devices, bot.OwnerID),
 		tools.NewLocalScreenshotTool(e.devices, bot.OwnerID),
 		tools.NewLocalClipboardTool(e.devices, bot.OwnerID),
@@ -866,7 +914,7 @@ func (e *Engine) buildRegistry(ctx context.Context, root *os.Root, bot store.Bot
 			tools.NewTaskUpdateTool(e.db, bot.OwnerID),
 			tools.NewProjectShareTool(e.db, bot.OwnerID),
 			tools.NewProjectJoinTool(e.db, bot.OwnerID),
-			tools.NewDocumentCreateTool(e.db, bot.OwnerID),
+			tools.NewDocumentCreateTool(e.db, bot.OwnerID, bot.ID, documentIndexer(e.libraryIndexer)),
 			tools.NewDocumentReadTool(e.db, bot.OwnerID),
 		)
 	}
@@ -938,7 +986,7 @@ func userMessageWithImages(content string, images []llm.Part) llm.Message {
 	return llm.Message{Role: llm.RoleUser, Parts: parts}
 }
 
-func (e *Engine) buildMessages(ctx context.Context, bot store.Bot, conv store.Conversation, modelRow *store.Model, registry *tools.Registry, instruction, sharedHostPath, sharedContainerPath string, isolated bool) ([]llm.Message, int, int64, error) {
+func (e *Engine) buildMessages(ctx context.Context, bot store.Bot, conv store.Conversation, modelRow *store.Model, registry *tools.Registry, instruction, sharedHostPath, sharedContainerPath string, isolated bool, root *os.Root) ([]llm.Message, int, int64, error) {
 	names := map[uuid.UUID]string{bot.ID: bot.Name}
 	if conv.TeamID != nil {
 		teamBots, err := e.db.ListTeamBots(ctx, *conv.TeamID)
@@ -1022,7 +1070,35 @@ func (e *Engine) buildMessages(ctx context.Context, bot store.Bot, conv store.Co
 					continue
 				}
 				note := fmt.Sprintf("【附件：%s（%s，%d 字节）】", meta.Filename, meta.MimeType, meta.SizeBytes)
-				if strings.HasPrefix(meta.MimeType, "text/") || meta.MimeType == "application/json" {
+				// Every attachment is also placed in the bot's computer, so
+				// a Word template or a spreadsheet can be opened and filled
+				// in with the right library instead of only being described.
+				placed := ""
+				if root != nil && meta.SizeBytes > 0 && meta.SizeBytes <= 25<<20 {
+					if att, err := e.db.GetAttachmentForOwner(ctx, store.GetAttachmentForOwnerParams{
+						ID: meta.ID, OwnerID: meta.OwnerID,
+					}); err == nil {
+						if rel, err := tools.PlaceInWorkspace(root, meta.Filename, att.Content); err == nil {
+							placed = rel
+						} else {
+							e.logger.Warn("place attachment in workspace failed", "attachment_id", meta.ID, "error", err)
+						}
+						if officetext.Supported(meta.Filename) {
+							if text, cut, err := officetext.Extract(meta.Filename, att.Content, 6000); err == nil && text != "" {
+								note += "\n正文（自动提取，排版和图片已省略）：\n" + text
+								if cut {
+									note += "\n…（正文较长，已截断；完整内容在电脑里的原文件中）"
+								}
+							}
+						}
+					}
+				}
+				if placed != "" {
+					note += "\n原文件已放到你的电脑：/workspace/" + placed + "（工作区路径 " + placed + "）。需要保留原格式（例如按模板填写）时，在电脑里用 python 处理这个文件。"
+				}
+				if officetext.Supported(meta.Filename) {
+					// Text and the file location are already in the note.
+				} else if strings.HasPrefix(meta.MimeType, "text/") || meta.MimeType == "application/json" {
 					att, err := e.db.GetAttachmentForOwner(ctx, store.GetAttachmentForOwnerParams{
 						ID:      meta.ID,
 						OwnerID: meta.OwnerID,
@@ -1052,10 +1128,10 @@ func (e *Engine) buildMessages(ctx context.Context, bot store.Bot, conv store.Co
 					} else {
 						note += "\n（图片过大或读取失败，未能附加到模型输入。）"
 					}
-				} else {
+				} else if placed == "" {
 					note += "\n（当前模型无法直接查看该类型的附件，请向用户说明或请其提供文本描述。）"
 				}
-				attachmentNotes[*meta.MessageID] = note
+				attachmentNotes[*meta.MessageID] += note + "\n"
 			}
 		}
 	}

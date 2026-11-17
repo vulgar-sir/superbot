@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/google/uuid"
 
+	"superbot/internal/officetext"
 	"superbot/internal/store"
 )
 
@@ -132,18 +135,23 @@ func (t *listLibraryTool) Execute(ctx context.Context, args json.RawMessage) (Re
 }
 
 type readLibraryTool struct {
-	db      *store.DB
-	ownerID uuid.UUID
+	db        *store.DB
+	ownerID   uuid.UUID
+	workspace *os.Root
 }
 
-func NewReadLibraryTool(db *store.DB, ownerID uuid.UUID) Tool {
-	return &readLibraryTool{db: db, ownerID: ownerID}
+// NewReadLibraryTool reads Library items. Files (a Word template a user
+// uploaded, a spreadsheet) are also copied into the bot's workspace so its
+// computer can open them with the right library; workspace may be nil.
+func NewReadLibraryTool(db *store.DB, ownerID uuid.UUID, workspace *os.Root) Tool {
+	return &readLibraryTool{db: db, ownerID: ownerID, workspace: workspace}
 }
 
 func (t *readLibraryTool) Name() string { return "read_library" }
 
 func (t *readLibraryTool) Description() string {
-	return "读取资料库中某条资料的完整内容。"
+	return "读取资料库中某条资料的完整内容。Word/PPT/Excel 会返回提取出的正文；" +
+		"资料是文件时还会把原文件复制到你电脑的 /workspace/uploads/，需要保留原格式（例如按模板填写）时在电脑里用 python-docx / openpyxl / python-pptx 处理它。"
 }
 
 func (t *readLibraryTool) Parameters() json.RawMessage {
@@ -165,5 +173,69 @@ func (t *readLibraryTool) Execute(ctx context.Context, args json.RawMessage) (Re
 	if err != nil {
 		return Result{Content: "library item not found", IsError: true}, nil
 	}
-	return Result{Content: item.Title + "\n\n" + item.Content}, nil
+	content := item.Content
+	var notes []string
+	if item.FilePath != "" {
+		name := libraryFileName(item)
+		raw, readErr := os.ReadFile(item.FilePath)
+		switch {
+		case readErr != nil:
+			notes = append(notes, "（原文件已不在服务器上，只能读取保存的文字内容。）")
+		default:
+			if strings.TrimSpace(content) == "" && officetext.Supported(name) {
+				if text, truncated, err := officetext.Extract(name, raw, maxLibraryContentBytes/4); err == nil {
+					content = text
+					if truncated {
+						content += "\n…（正文较长，已截断；完整内容请在电脑里打开原文件）"
+					}
+				}
+			}
+			if inWorkspace := t.workspaceRelative(item.FilePath); inWorkspace != "" {
+				notes = append(notes, "原文件就在你的电脑里：/workspace/"+inWorkspace)
+			} else if t.workspace != nil {
+				if rel, err := PlaceInWorkspace(t.workspace, name, raw); err == nil {
+					notes = append(notes, "原文件已复制到你的电脑：/workspace/"+rel+"（工作区路径 "+rel+"）")
+				}
+			}
+			if strings.TrimSpace(content) == "" {
+				notes = append(notes, "（这是二进制文件，没有可直接显示的文字；请在电脑里用合适的工具打开。）")
+			}
+		}
+	}
+	text := item.Title + "\n\n" + content
+	if len(notes) > 0 {
+		text += "\n\n" + strings.Join(notes, "\n")
+	}
+	return Result{Content: text}, nil
+}
+
+// libraryFileName is the name the item's file should have when copied out:
+// the original upload name when known, else the title, keeping the file's
+// own extension so tools recognise its format.
+func libraryFileName(item store.LibraryItem) string {
+	var meta struct {
+		OriginalName string `json:"original_name"`
+	}
+	_ = json.Unmarshal(item.Metadata, &meta)
+	name := strings.TrimSpace(meta.OriginalName)
+	if name == "" {
+		name = strings.TrimSpace(item.Title)
+	}
+	if ext := filepath.Ext(item.FilePath); ext != "" && !strings.EqualFold(filepath.Ext(name), ext) {
+		name += ext
+	}
+	return name
+}
+
+// workspaceRelative returns the path of hostPath inside the workspace, or ""
+// when it lies elsewhere.
+func (t *readLibraryTool) workspaceRelative(hostPath string) string {
+	if t.workspace == nil {
+		return ""
+	}
+	rel, err := filepath.Rel(t.workspace.Name(), hostPath)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+		return ""
+	}
+	return filepath.ToSlash(rel)
 }

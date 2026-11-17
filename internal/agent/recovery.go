@@ -296,6 +296,11 @@ func (e *Engine) Housekeeping(ctx context.Context) {
 			})
 		}
 	}
+	if count, err := e.db.InterruptOrphanedRuns(ctx); err != nil {
+		e.logger.Warn("interrupt orphaned runs failed", "error", err)
+	} else if count > 0 {
+		e.logger.Info("closed runs their cycle left running", "count", count)
+	}
 	e.reviewMemories(ctx)
 	e.seenMu.Lock()
 	due := time.Since(e.lastPrune) >= housekeepingEvery

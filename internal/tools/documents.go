@@ -10,17 +10,28 @@ import (
 	"superbot/internal/store"
 )
 
+// DocumentIndexer files a new account document into a bot's Library.
+type DocumentIndexer interface {
+	IndexDocument(ctx context.Context, ownerID, botID uuid.UUID, document store.Document) (bool, error)
+}
+
 type documentCreateTool struct {
 	db      *store.DB
 	ownerID uuid.UUID
+	botID   uuid.UUID
+	library DocumentIndexer
 }
 
-func NewDocumentCreateTool(db *store.DB, ownerID uuid.UUID) Tool {
-	return &documentCreateTool{db: db, ownerID: ownerID}
+// NewDocumentCreateTool creates account documents. The document also lands
+// in the creating bot's Library, which is where people look for what a bot
+// wrote; library may be nil in tests.
+func NewDocumentCreateTool(db *store.DB, ownerID, botID uuid.UUID, library DocumentIndexer) Tool {
+	return &documentCreateTool{db: db, ownerID: ownerID, botID: botID, library: library}
 }
 func (t *documentCreateTool) Name() string { return "create_document" }
 func (t *documentCreateTool) Description() string {
-	return "创建账户文档或 Canvas，返回 document_id。"
+	return "创建账户文档或 Canvas（Markdown），返回 document_id。文档会出现在账户「文档」列表，并收进你的资料库。" +
+		"只有调用成功并拿到 document_id 后，才能告诉用户文档已写好。"
 }
 func (t *documentCreateTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"title":{"type":"string"},"content":{"type":"string"},"kind":{"type":"string","enum":["document","canvas"]}},"required":["title"]}`)
@@ -48,7 +59,18 @@ func (t *documentCreateTool) Execute(ctx context.Context, raw json.RawMessage) (
 	if err != nil {
 		return Result{Content: "创建文档失败: " + err.Error(), IsError: true}, nil
 	}
-	encoded, _ := json.Marshal(map[string]any{"document_id": doc.ID.String(), "kind": doc.Kind})
+	inLibrary := false
+	if t.library != nil && t.botID != uuid.Nil {
+		if _, err := t.library.IndexDocument(ctx, t.ownerID, t.botID, doc); err == nil {
+			inLibrary = true
+		}
+	}
+	encoded, _ := json.Marshal(map[string]any{
+		"document_id": doc.ID.String(),
+		"kind":        doc.Kind,
+		"title":       doc.Title,
+		"in_library":  inLibrary,
+	})
 	return Result{Content: string(encoded)}, nil
 }
 

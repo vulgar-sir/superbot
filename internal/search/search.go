@@ -24,6 +24,8 @@ type Result struct {
 	Snippet   string
 	SiteName  string
 	Published string
+	// Engine is EngineBing for results from the keyless fallback, else "".
+	Engine string
 }
 
 type Service struct {
@@ -68,7 +70,12 @@ func (s *Service) Search(ctx context.Context, ownerID uuid.UUID, query string, c
 		}
 	}
 	if provider == nil {
-		return nil, errors.New("未配置搜索 Provider。请在 设置 → 新增 Provider 中添加 type=search 的 Bocha 或 Tavily")
+		results, err := s.searchBing(ctx, query, count)
+		if err != nil {
+			s.logger.Warn("bing fallback search failed", "error", err)
+			return nil, errors.New("未配置搜索 Provider，备用的 Bing 网页搜索也失败了（" + err.Error() + "）。可以在 设置 → 新增 Provider 中添加 type=search 的 Bocha 或 Tavily")
+		}
+		return results, nil
 	}
 	apiKey := ""
 	if len(provider.ApiKeyEnc) > 0 {

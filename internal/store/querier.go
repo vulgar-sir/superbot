@@ -247,6 +247,11 @@ type Querier interface {
 	IncrementBotTemplateInstall(ctx context.Context, id uuid.UUID) error
 	InsertEmailTriggerSeen(ctx context.Context, arg InsertEmailTriggerSeenParams) (int64, error)
 	InsertEvent(ctx context.Context, arg InsertEventParams) (Event, error)
+	// A run is left 'running' when its cycle moved on without finishing it: the
+	// cycle paused for a tool approval (the resume starts a new run) or a worker
+	// died mid-run and the cycle was later failed or finished. Once the cycle is
+	// no longer active, nothing will ever finish such a run.
+	InterruptOrphanedRuns(ctx context.Context) (int64, error)
 	ListAccountInvitations(ctx context.Context, accountID uuid.UUID) ([]AccountInvitation, error)
 	ListAccountMembers(ctx context.Context, accountID uuid.UUID) ([]ListAccountMembersRow, error)
 	ListAccountsForUser(ctx context.Context, userID uuid.UUID) ([]ListAccountsForUserRow, error)

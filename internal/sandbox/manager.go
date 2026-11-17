@@ -326,7 +326,10 @@ func (s ContainerSpec) CreateOptions() client.ContainerCreateOptions {
 			hostConfig.PortBindings = bindings
 		}
 		hostConfig.ShmSize = 512 * 1024 * 1024
-		hostConfig.Tmpfs = map[string]string{"/tmp": "rw,size=1g,mode=1777"}
+		// exec: HOME is /tmp, so `pip install --user` puts packages with
+		// compiled modules (lxml, numpy) there; Docker's default noexec
+		// made every such import fail with "failed to map segment".
+		hostConfig.Tmpfs = map[string]string{"/tmp": "rw,exec,size=1g,mode=1777"}
 		hostConfig.Resources = container.Resources{
 			Memory:     computerMemory,
 			MemorySwap: -1,
@@ -356,8 +359,9 @@ const (
 	teamsLabelKey    = "superbot.teams"
 	mountsVersionKey = "superbot.mounts"
 	// mountsVersion changes whenever the mount layout does, so containers
-	// created under an older layout are rebuilt once.
-	mountsVersion = "3"
+	// created under an older layout are rebuilt once. 4: /tmp allows exec
+	// (and picks up the image with the document libraries).
+	mountsVersion = "4"
 )
 
 // teamMounts returns the bind mounts for the shared directories of the

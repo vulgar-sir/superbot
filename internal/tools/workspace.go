@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"superbot/internal/officetext"
 )
 
 const (
@@ -167,6 +169,17 @@ func (t *readTool) Execute(ctx context.Context, raw json.RawMessage) (Result, er
 	if err != nil {
 		return Result{}, fmt.Errorf("read %q: %w", rel, err)
 	}
+	if officetext.Supported(rel) {
+		// Word/PowerPoint/Excel are zip archives; hand back their text.
+		text, cut, err := officetext.Extract(rel, data, limit/3)
+		if err != nil {
+			return Result{}, fmt.Errorf("read %q: %w", rel, err)
+		}
+		if cut {
+			text += "\n…（正文较长，已截断）"
+		}
+		return Result{Content: "（从 " + rel + " 提取的正文，排版和图片已省略；要保留格式请在电脑里用 python-docx / openpyxl / python-pptx 处理）\n\n" + text}, nil
+	}
 	truncated := false
 	if len(data) > limit {
 		data = data[:limit]
@@ -190,15 +203,18 @@ type writeTool struct {
 
 func (t *writeTool) Name() string { return t.prefix + "write" }
 func (t *writeTool) Description() string {
-	return "Create or overwrite a text file in the " + t.scope + ". Parent directories are created automatically."
+	return "Create or overwrite a text file in the " + t.scope + ". Parent directories are created automatically. " +
+		"For a long file, write it in parts: the first call without append, later calls with append=true, " +
+		"so no single call carries more than a few thousand characters."
 }
 func (t *writeTool) Parameters() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}`)
+	return json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"append":{"type":"boolean","description":"add content to the end of the file instead of replacing it"}},"required":["path","content"]}`)
 }
 
 type writeArgs struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
+	Append  bool   `json:"append"`
 }
 
 func (t *writeTool) Execute(ctx context.Context, raw json.RawMessage) (Result, error) {
@@ -221,6 +237,29 @@ func (t *writeTool) Execute(ctx context.Context, raw json.RawMessage) (Result, e
 		if err := t.root.MkdirAll(dir, 0o755); err != nil {
 			return Result{}, fmt.Errorf("create parent directory: %w", err)
 		}
+	}
+	if args.Append {
+		file, err := t.root.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
+		if err != nil {
+			return Result{}, fmt.Errorf("open %q: %w", rel, err)
+		}
+		info, statErr := file.Stat()
+		if statErr == nil && info.Size()+int64(len(args.Content)) > 8*maxWriteLimit {
+			_ = file.Close()
+			return Result{}, fmt.Errorf("file would exceed %d bytes", 8*maxWriteLimit)
+		}
+		if _, err := file.WriteString(args.Content); err != nil {
+			_ = file.Close()
+			return Result{}, fmt.Errorf("append %q: %w", rel, err)
+		}
+		if err := file.Close(); err != nil {
+			return Result{}, fmt.Errorf("append %q: %w", rel, err)
+		}
+		size := int64(len(args.Content))
+		if statErr == nil {
+			size += info.Size()
+		}
+		return Result{Content: fmt.Sprintf("appended %d bytes to %s (now %d bytes)", len(args.Content), rel, size)}, nil
 	}
 	if err := t.root.WriteFile(rel, []byte(args.Content), 0o644); err != nil {
 		return Result{}, fmt.Errorf("write %q: %w", rel, err)

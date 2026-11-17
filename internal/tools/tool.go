@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	"superbot/internal/llm"
 )
@@ -58,10 +59,40 @@ func (r *Registry) Definitions() []llm.ToolDef {
 	return out
 }
 
+// Has reports whether a tool with this name is registered.
+func (r *Registry) Has(name string) bool {
+	_, ok := r.tools[name]
+	return ok
+}
+
+// similar lists registered tools whose name contains the unknown name, or
+// is contained in it: a model that calls "write" means workspace_write.
+func (r *Registry) similar(name string) []string {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	if lower == "" {
+		return nil
+	}
+	var out []string
+	for _, candidate := range r.order {
+		if strings.Contains(candidate, lower) || strings.Contains(lower, candidate) {
+			out = append(out, candidate)
+		}
+	}
+	sort.Strings(out)
+	if len(out) > 6 {
+		out = out[:6]
+	}
+	return out
+}
+
 func (r *Registry) Execute(ctx context.Context, name string, args json.RawMessage) Result {
 	tool, ok := r.tools[name]
 	if !ok {
-		return Result{Content: fmt.Sprintf("unknown tool %q", name), IsError: true}
+		message := fmt.Sprintf("unknown tool %q", name)
+		if similar := r.similar(name); len(similar) > 0 {
+			message += "；可用的相近工具：" + strings.Join(similar, ", ")
+		}
+		return Result{Content: message, IsError: true}
 	}
 	result, err := tool.Execute(ctx, args)
 	if err != nil {

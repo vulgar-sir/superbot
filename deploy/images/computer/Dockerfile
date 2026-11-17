@@ -16,6 +16,7 @@ RUN apt-get update \
         jq \
         novnc \
         procps \
+        python-is-python3 \
         python3 \
         python3-pip \
         python3-venv \
@@ -26,6 +27,21 @@ RUN apt-get update \
         xdotool \
         xvfb \
     && rm -rf /var/lib/apt/lists/*
+
+# Office and document work is the most common thing bots do on their
+# computer: reading a Word template a user sent, filling it in, producing a
+# spreadsheet, slides, a PDF or a chart. Installing these per turn with
+# `pip install --user` lands them on the tmpfs /tmp, where they vanish on
+# restart, so they ship with the image.
+RUN pip3 install --no-cache-dir --break-system-packages \
+        python-docx \
+        python-pptx \
+        openpyxl \
+        pypdf \
+        reportlab \
+        matplotlib \
+        pillow \
+        lxml
 
 RUN useradd -m -u 1000 -d /home/bot -s /bin/bash bot \
     && mkdir -p /workspace /usr/share/novnc \

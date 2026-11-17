@@ -4,6 +4,7 @@
 package library
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -18,10 +19,12 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"superbot/internal/officetext"
 	"superbot/internal/store"
 )
 
@@ -98,11 +101,74 @@ func kindFor(path string) (kind, mimeType string) {
 }
 
 func isTextMime(mimeType string) bool {
+	// Office formats (application/vnd.openxmlformats-...+xml containers) are
+	// zip archives even though their type mentions xml.
+	if strings.Contains(mimeType, "openxmlformats") || strings.Contains(mimeType, "vnd.ms-") ||
+		strings.Contains(mimeType, "zip") || strings.Contains(mimeType, "octet-stream") {
+		return false
+	}
 	return strings.HasPrefix(mimeType, "text/") ||
 		strings.Contains(mimeType, "json") ||
 		strings.Contains(mimeType, "xml") ||
 		strings.Contains(mimeType, "javascript") ||
 		strings.Contains(mimeType, "yaml")
+}
+
+// inlineText is the text stored with a Library row so it can be read and
+// searched: the file itself for plain text, the extracted text for Office
+// documents, nothing for anything else. Postgres text cannot hold NUL bytes
+// or invalid UTF-8, so binary content never gets through.
+func inlineText(filePath, mimeType string, size int64) string {
+	if officetext.Supported(filePath) {
+		if size > maxIndexedFileBytes {
+			return ""
+		}
+		raw, err := os.ReadFile(filePath)
+		if err != nil {
+			return ""
+		}
+		text, truncated, err := officetext.Extract(filePath, raw, maxInlineTextBytes/2)
+		if err != nil {
+			return ""
+		}
+		if truncated {
+			text += "\n…（内容较长，已截断）"
+		}
+		return text
+	}
+	if !isTextMime(mimeType) || size > maxInlineTextBytes {
+		return ""
+	}
+	raw, err := os.ReadFile(filePath)
+	if err != nil || !utf8.Valid(raw) || bytes.IndexByte(raw, 0) >= 0 {
+		return ""
+	}
+	return string(raw)
+}
+
+// skipScanDir reports whether a workspace directory holds tooling rather
+// than work: hidden directories (.superbot scratch files, browser profile),
+// caches, and installed packages, which a model sometimes vendors into the
+// workspace with `pip install --target`.
+func skipScanDir(path, name string) bool {
+	if skipDirs[name] || strings.HasPrefix(name, ".") {
+		return true
+	}
+	if strings.HasSuffix(name, ".dist-info") || strings.HasSuffix(name, ".egg-info") {
+		return true
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		entryName := entry.Name()
+		if entryName == "__init__.py" || strings.HasSuffix(entryName, ".dist-info") || strings.HasSuffix(entryName, ".egg-info") {
+			// A Python package, or a directory packages were installed into.
+			return true
+		}
+	}
+	return false
 }
 
 func (i *Indexer) existing(ctx context.Context, botID uuid.UUID, filePath string) bool {
@@ -148,12 +214,7 @@ func (i *Indexer) IndexFile(
 	if source != "" && sourceID != "" && i.existingSource(ctx, botID, source, sourceID) {
 		return false, nil
 	}
-	content := ""
-	if isTextMime(mimeType) && info.Size() <= maxInlineTextBytes {
-		if raw, readErr := os.ReadFile(filePath); readErr == nil {
-			content = string(raw)
-		}
-	}
+	content := inlineText(filePath, mimeType, info.Size())
 	metadata, _ := json.Marshal(map[string]any{
 		"auto":          true,
 		"source":        source,
@@ -205,7 +266,7 @@ func (i *Indexer) IndexWorkspace(ctx context.Context, ownerID, botID uuid.UUID, 
 			return nil
 		}
 		if entry.IsDir() {
-			if skipDirs[entry.Name()] {
+			if path != root && skipScanDir(path, entry.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
