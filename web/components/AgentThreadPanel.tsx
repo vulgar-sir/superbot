@@ -12,9 +12,12 @@ import { Modal } from "./ui/Modal";
 export function AgentThreadPanel({
   threadID,
   onClose,
+  onOpenLive,
 }: {
   threadID: string;
   onClose: () => void;
+  // Opens the thread in the main view, with tool calls and live output.
+  onOpenLive?: (detail: AgentThreadDetail) => void;
 }) {
   const [detail, setDetail] = useState<AgentThreadDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -105,6 +108,19 @@ export function AgentThreadPanel({
                 showSender
               />
             ))}
+          </div>
+        )}
+        {detail && onOpenLive && (
+          <div className="mt-4 flex justify-center">
+            <button
+              type="button"
+              className="sb-btn"
+              data-variant="secondary"
+              data-size="sm"
+              onClick={() => onOpenLive(detail)}
+            >
+              查看完整过程（工具调用与实时进度）
+            </button>
           </div>
         )}
         <div className="mt-4 text-center text-[11px] text-[var(--sb-text-4)]">

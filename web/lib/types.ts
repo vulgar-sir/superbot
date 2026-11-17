@@ -109,7 +109,8 @@ export interface Conversation {
   id: string;
   team_id: string | null;
   direct_bot_id: string | null;
-  kind: "team" | "direct";
+  // "agent": the private thread of two bots, shown read-only.
+  kind: "team" | "direct" | "agent";
   title: string;
   status: string;
   budget_micros: number;

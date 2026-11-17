@@ -226,10 +226,23 @@ func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request) {
 		writeChatError(w, err, "could not load conversation")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	out := map[string]any{
 		"conversation": toConversationDTO(conv),
 		"messages":     s.toMessageDTOs(r.Context(), userFrom(r).ID, messages),
-	})
+	}
+	// The latest cycle tells a page opened later whether the last request
+	// failed (and why) or is still being worked on; without it a failure
+	// left no trace after a reload and the user just sent the message again.
+	if cycles, err := s.db.ListCyclesByConversation(r.Context(), store.ListCyclesByConversationParams{
+		ConversationID: conv.ID, Limit: 1,
+	}); err == nil && len(cycles) > 0 {
+		out["last_cycle"] = map[string]any{
+			"status":     cycles[0].Status,
+			"error":      cycles[0].Error,
+			"updated_at": cycles[0].UpdatedAt,
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 type sendMessageRequest struct {

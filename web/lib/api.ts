@@ -902,9 +902,12 @@ export const api = {
     return request<void>(`/api/routines/${id}`, { method: "DELETE", body: jsonBody({}) });
   },
   getConversation(id: string) {
-    return request<{ conversation: Conversation; messages: Message[] }>(
-      `/api/conversations/${id}`,
-    );
+    return request<{
+      conversation: Conversation;
+      messages: Message[];
+      // The latest cycle: whether the last request failed or is in progress.
+      last_cycle?: { status: string; error: string; updated_at: string };
+    }>(`/api/conversations/${id}`);
   },
   getConversationSummary(id: string) {
     return request<{ summary: ConversationSummary | null }>(

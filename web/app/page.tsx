@@ -22,6 +22,7 @@ import {
 import { api, ApiError, SSE_EVENT_TYPES } from "@/lib/api";
 import { botProfilePayload } from "@/lib/bot";
 import type {
+  AgentThreadDetail,
   Attachment,
   Bot,
   Conversation,
@@ -44,6 +45,7 @@ import { BotInfoDialog } from "@/components/BotInfoDialog";
 import { RoutineDialog } from "@/components/RoutineDialog";
 import { AgentThreadPanel } from "@/components/AgentThreadPanel";
 import { AgentThreadGroup } from "@/components/AgentThreadGroup";
+import { BotWorkBanner } from "@/components/BotWorkBanner";
 import { buildTranscript, itemMessage } from "@/lib/agentThreads";
 import { orderForDisplay, replyRunIDs, replySeenOrdinal, unreadByReply } from "@/lib/displayOrder";
 import { SearchDialog } from "@/components/SearchDialog";
@@ -288,6 +290,9 @@ export default function HomePage() {
   const [primaryError, setPrimaryError] = useState<string | null>(null);
   const [routineBot, setRoutineBot] = useState<Bot | null>(null);
   const [agentThreadID, setAgentThreadID] = useState<string | null>(null);
+  // Set while a bot-to-bot thread is open in the main view (read-only):
+  // the bot whose work it is, the chat to return to, and the pair's name.
+  const [agentView, setAgentView] = useState<{ botId: string; returnTo: string | null; title: string } | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [voiceOpen, setVoiceOpen] = useState(false);
@@ -811,6 +816,7 @@ export default function HomePage() {
 
   const openConversation = useCallback(
     async (id: string) => {
+      setAgentView(null);
       setLoadingConversation(true);
       setErrorMessage(null);
       try {
@@ -829,6 +835,11 @@ export default function HomePage() {
         setCycleRetry(null);
         setCycleFailure(null);
         setConversations((prev) => prev.map((item) => (item.id === id ? data.conversation : item)));
+        // After a reload, show that the last request failed, or that the bot
+        // is still on it (stop button, busy composer), as a live page would.
+        const lastCycle = data.last_cycle;
+        if (lastCycle?.status === "failed") setCycleFailure(lastCycle.error ?? "");
+        if (lastCycle && ["queued", "running"].includes(lastCycle.status)) setCycleActive(true);
         void api
           .listToolApprovals(id)
           .then((result) => {
@@ -929,6 +940,23 @@ export default function HomePage() {
     window.addEventListener("beforeinstallprompt", handler);
     return () => window.removeEventListener("beforeinstallprompt", handler);
   }, []);
+
+  const refreshedForRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!conversation) return;
+    const botMissing = conversation.direct_bot_id && !bots.some((bot) => bot.id === conversation.direct_bot_id);
+    const teamMissing = conversation.team_id && !teams.some((team) => team.id === conversation.team_id);
+    if (!botMissing && !teamMissing) return;
+    if (refreshedForRef.current === conversation.id) return;
+    refreshedForRef.current = conversation.id;
+    if (botMissing) void refreshBots();
+    if (teamMissing) {
+      void api
+        .listTeams()
+        .then((result) => setTeams(result.teams))
+        .catch(() => undefined);
+    }
+  }, [conversation, bots, teams, refreshBots]);
 
   const openSettings = useCallback((section = "appearance") => {
     setSettingsSection(section);
@@ -1126,9 +1154,12 @@ export default function HomePage() {
   }, [settingsOpen]);
 
   const activeBot = useMemo(
-    () => bots.find((bot) => bot.id === conversation?.direct_bot_id),
-    [bots, conversation],
+    () =>
+      bots.find((bot) => bot.id === conversation?.direct_bot_id) ??
+      (agentView ? bots.find((bot) => bot.id === agentView.botId) : undefined),
+    [bots, conversation, agentView],
   );
+  const isAgentView = conversation?.kind === "agent";
   const activeTeam = useMemo(
     () => teams.find((team) => team.id === conversation?.team_id),
     [teams, conversation],
@@ -1158,7 +1189,9 @@ export default function HomePage() {
     (runIds: string[]) => runIds.flatMap((runId) => tools[runId] ?? []),
     [tools],
   );
-  const identityName = activeTeam?.name ?? activeBot?.name ?? conversation?.title ?? "superbot";
+  const identityName = isAgentView
+    ? agentView?.title ?? conversation?.title ?? "superbot"
+    : activeTeam?.name ?? activeBot?.name ?? conversation?.title ?? "superbot";
   const primaryBot = useMemo(
     () => bots.find((bot) => bot.id === user?.primary_bot_id),
     [bots, user?.primary_bot_id],
@@ -1431,6 +1464,23 @@ export default function HomePage() {
       await createConversation(bot.id);
     },
     [createConversation, refreshSidebar],
+  );
+
+  // A bot's work for another bot happens in their private thread; open
+  // that conversation in the main view so its tool calls and live output
+  // show, read-only, with a way back.
+  const openAgentWork = useCallback(
+    async (detail: AgentThreadDetail, focusBotId?: string) => {
+      const returnTo = activeIdRef.current;
+      setAgentThreadID(null);
+      await openConversation(detail.conversation.id);
+      setAgentView({
+        botId: focusBotId ?? detail.bot_b.id,
+        returnTo: returnTo && returnTo !== detail.conversation.id ? returnTo : null,
+        title: `${detail.bot_a.name} ↔ ${detail.bot_b.name}`,
+      });
+    },
+    [openConversation],
   );
 
   const openGroup = useCallback(
@@ -1920,6 +1970,13 @@ export default function HomePage() {
               onScroll={onTranscriptScroll}
             >
               <div className="sb-transcript-inner mx-auto w-full max-w-[820px]">
+                {!loadingConversation && !isAgentView && conversation?.direct_bot_id && activeBot && (
+                  <BotWorkBanner
+                    bot={activeBot}
+                    refreshKey={messages.length}
+                    onView={(detail) => void openAgentWork(detail, activeBot.id)}
+                  />
+                )}
                 {loadingConversation && (
                   <div className="space-y-3 py-8">
                     <div className="sb-skeleton h-16 w-[62%]" />
@@ -2159,24 +2216,43 @@ export default function HomePage() {
                     </button>
                   </div>
                 )}
-                <Composer
-                  value={input}
-                  onChange={setInput}
-                  onSend={submitComposer}
-                  onSideQuestion={() => openSidePanel(true)}
-                  onStop={() => void stop()}
-                  busy={cycleActive}
-                  placeholder={language === "en" ? `${t("page.messageTo")} ${identityName}` : `给 ${identityName} 发消息`}
-                  onOpenVoice={() => setVoiceOpen(true)}
-                  mentionBots={activeTeam?.bots.map((entry) => entry.bot) ?? []}
-                  attachments={pendingAttachments}
-                  uploadingAttachments={uploadingAttachments}
-                  onUploadFiles={(files) => void uploadFiles(files)}
-                  onSendVoice={sendVoice}
-                  onRemoveAttachment={(id) =>
-                    setPendingAttachments((prev) => prev.filter((item) => item.id !== id))
-                  }
-                />
+                {isAgentView ? (
+                  <div className="flex min-h-12 items-center justify-between gap-3 rounded-2xl border border-[var(--sb-border)] bg-[var(--sb-pane)] px-4 py-2 text-[13px] text-[var(--sb-text-2)]">
+                    <span>
+                      这是 {agentView?.title ?? conversation?.title} 之间的私信，只读；结果会自动交回给发起方。
+                    </span>
+                    {agentView?.returnTo && (
+                      <button
+                        type="button"
+                        className="sb-btn shrink-0"
+                        data-variant="secondary"
+                        data-size="sm"
+                        onClick={() => void openConversation(agentView.returnTo as string)}
+                      >
+                        返回
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <Composer
+                    value={input}
+                    onChange={setInput}
+                    onSend={submitComposer}
+                    onSideQuestion={() => openSidePanel(true)}
+                    onStop={() => void stop()}
+                    busy={cycleActive}
+                    placeholder={language === "en" ? `${t("page.messageTo")} ${identityName}` : `给 ${identityName} 发消息`}
+                    onOpenVoice={() => setVoiceOpen(true)}
+                    mentionBots={activeTeam?.bots.map((entry) => entry.bot) ?? []}
+                    attachments={pendingAttachments}
+                    uploadingAttachments={uploadingAttachments}
+                    onUploadFiles={(files) => void uploadFiles(files)}
+                    onSendVoice={sendVoice}
+                    onRemoveAttachment={(id) =>
+                      setPendingAttachments((prev) => prev.filter((item) => item.id !== id))
+                    }
+                  />
+                )}
               </div>
             </div>
           </>
@@ -2361,7 +2437,11 @@ export default function HomePage() {
       )}
 
       {agentThreadID && (
-        <AgentThreadPanel threadID={agentThreadID} onClose={() => setAgentThreadID(null)} />
+        <AgentThreadPanel
+          threadID={agentThreadID}
+          onClose={() => setAgentThreadID(null)}
+          onOpenLive={(detail) => void openAgentWork(detail)}
+        />
       )}
 
       <SearchDialog

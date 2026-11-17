@@ -28,6 +28,12 @@ All notable changes to superbot are documented here. The format follows [Keep a 
 - Desktop screen reading lists the controls programs publish over the accessibility bus (buttons, menus, fields with exact names and click points), so single symbols OCR misses, such as a calculator's "+", are clickable; `find` matches control names first.
 - Bots whose provider was deleted or disabled, or whose model left the provider's list, move automatically to a usable model (their own provider's first model, otherwise the newest enabled provider's) when providers or models change and before a turn; the account is notified which bots moved. A group's coordinator model falls back the same way.
 - Personal facts the earlier review stored in group memory move to the person's own memory where the person is certain (single-member accounts), judged by the group lead's model.
+- A bot's chat shows the tasks other bots gave it by private message ("正在处理 / 已回复"), and "查看过程" opens that thread in the main view, read-only, with its tool calls and live output.
+- Opening a conversation shows whether the last request failed (with retry) or is still running, also after a reload.
+
+### Fixed (chat)
+
+- A bot or group created after the page loaded (e.g. by the primary bot) opened as "未选择" with no identity; the page now fetches the lists again.
 
 ### Fixed
 
