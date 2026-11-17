@@ -1,170 +1,241 @@
-# superbot
+<p align="center">
+  <img src="docs/assets/banner.svg" alt="superbot — self-hosted multi-agent collaboration" width="100%">
+</p>
 
-自托管的多 Agent 协作平台：在你的服务器上创建可配置的 Bot，把它们组成团队，在同一个房间里对话、互相 @、共享工作区，并让它们使用 shell / Python / 浏览器 / MCP / Skill 完成任务。
+<p align="center">
+  <a href="https://github.com/vulgar-sir/superbot/actions/workflows/ci.yml"><img src="https://github.com/vulgar-sir/superbot/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" alt="License: AGPL-3.0"></a>
+  <img src="https://img.shields.io/badge/Go-1.27%2B-00ADD8?logo=go&logoColor=white" alt="Go 1.27+">
+  <img src="https://img.shields.io/badge/Next.js-16-000000?logo=nextdotjs&logoColor=white" alt="Next.js 16">
+  <img src="https://img.shields.io/badge/PostgreSQL-18%20%2B%20pgvector-4169E1?logo=postgresql&logoColor=white" alt="PostgreSQL 18 + pgvector">
+  <img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs welcome">
+</p>
 
-## 功能
+<p align="center">
+  <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a>
+</p>
 
-- **Bot**：人设、独立模型、工具策略、私有工作区、长期记忆、浏览器/云电脑；账号级「主 Bot」。
-- **Team**：圆桌、流水线、Router-Worker 和 group（Grok 风格群聊：最多 6 人、@ 驱动、主 Bot fallback、无中心协调者）四种编排。
-- **Room**：人类 + 多个 Bot 同屏；流式输出、@ 提及、停止、成本可见、工具调用时间线；跨 Bot 私信折叠卡片。
-- **动态**：Bot 回复、例程、队友私信写入 Activity；侧栏未读点、全局搜索、`/activity` 动态页。
-- **Room / Bot 私信**：`send_to_agent` 让 Bot 互相发私信，主聊天只显示折叠摘要。
-- **例程与 Library**：Bot 级 cron / `@every` / 一次性例程、暂停、到点进 DM 自动开工；页面/文档/文件/媒体资料库。
-- **扩展**：内置技能 + 用户 Skill + Bot 自提议；HTTP MCP；Bot 模板导出/导入；记忆导入。
-- **电脑**：每个 Bot 一个持久 Chromium/XFCE 会话；noVNC 实时接管；更新（保留文件）/重置（清空工作区）。
-- **本地设备**：`superbot device` 守护进程轮询，用户显式允许后 Bot 可 `local_exec` 在本机执行 shell。
-- **Vault**：登录信息/支付/联系信息 AES-256-GCM 加密，列表不回显，显式 reveal。
-- **用量**：按 Bot / 模型 / 日期统计 token 与人民币成本；语音输入/通话；深色/浅色主题。
-- **Grok Bot 风格 UI**：240px 分组侧栏、居中身份胶囊、18px 消息气泡、320px 可拖拽详情面板、应用内设置弹窗；右键菜单、侧栏拖拽排序、@ 成员自动补全、乐观发送与快捷键。
-- **连接器**：GitHub 设备码授权、Slack/Notion/1Password/Email Token、连接测试；GitHub/Slack/Notion 工具。
-- **团队能力**：多账号与角色隔离、WebAuthn/Passkey 安全密钥（需 HTTPS 域名）、邮件 SMTP、日程 ICS、自托管 embedding 语义召回、自托管 STT/TTS。
-- **多模型**：OpenAI 兼容（DeepSeek、Qwen、Moonshot、GLM、火山方舟、Ollama 等）与 Anthropic Messages API；请求阶段自动重试（429/5xx，遵守 Retry-After），流空闲超时检测。
-- **可观测**：所有消息、工具调用、token 与成本写入事件流，可回放、可审计。
-- **长任务可靠性**：对话过长时自动整理成「检查点」（结构化笔记 + 用户原话逐字保留），原文可用 `search_chat_history` 回查；工具循环内按预算压缩；worker 重启后从上一个工具轮次续跑而不是重放；不可重试的错误直接失败。
-- **随时插话**：Bot 干活时发的消息会在它下一步模型调用前送达；赶不上的自动补一轮。`/side` 旁路提问不打断任务、不写入对话。
-- **协作闭环**：`send_to_agent` 的回复和子代理结果会自动送回发起方并唤醒它，带接力与唤醒上限；审批暂停后流水线/圆桌/群聊会把剩余阶段跑完。
-- **群目标**：群聊可设目标，群主 Bot 与你对齐验收标准、拆阶段分派、凭证据逐段验收，空闲时自驱但会自己停下。
-- **记忆分层**：召回有相关度阈值，写入去重，疑似密钥拒绝入库，对话空闲后自动回顾提炼，每日整理重复且可恢复，可置顶/归档。
+**superbot** is a self-hosted, open-source multi-agent collaboration platform. Create configurable bots, put them in a room with you and with each other, give them a team, a shared workspace, a browser, a cloud computer and long-term memory — then let them actually do the work.
 
-## 架构
+Most chat products give you one assistant. superbot is built around the idea that useful agents need **peers, shared context and a place to work**. Bots can @mention each other, send private messages, hand off tasks, review each other's output, and keep working while you are away. Everything runs on your own server: your data, your models, your rules.
 
+<p align="center">
+  <img src="docs/assets/screenshot.png" alt="superbot room UI with several bots, shared activity and a library panel" width="100%">
+</p>
+<p align="center"><em>A room with several bots, shared activity and a library panel. The UI ships in Chinese and English, with dark and light themes.</em></p>
+
+## Highlights
+
+### Bots that are more than a system prompt
+
+Each bot has a persona, its own model, a tool policy, a private workspace, long-term memory, and optionally a persistent browser or XFCE desktop. An account-level **main bot** can act as the default identity for the sidebar and for group fallbacks.
+
+### Teams and rooms
+
+- **Roundtable** — bots discuss in turns and converge on an answer.
+- **Pipeline** — a task flows through ordered stages.
+- **Router–Worker** — a coordinator splits work and dispatches to specialists.
+- **Group** — a Grok-style room with up to six bots, @-mention driven, no central coordinator.
+
+Humans and bots share the same room: streaming output, mentions, stop, visible token cost, tool-call timelines, and folded bot-to-bot private messages.
+
+### Real work, not just text
+
+- **Shell, Python, files** inside a per-bot sandbox.
+- **Browser** — persistent Chromium sessions, CDP access, live takeover through noVNC.
+- **Cloud computer** — a full XFCE desktop per bot, with update (keep files) and reset (wipe workspace).
+- **Local device agent** — `superbot device` polls for jobs; the user must explicitly approve each shell command. Jobs and results are Ed25519-signed.
+- **MCP and Skills** — built-in skills, user skills, bot-proposed skills, and HTTP MCP servers.
+- **Connectors** — GitHub device-code auth, Slack, Notion, 1Password, Email, CalDAV.
+- **Vault** — logins, payment details and contact information encrypted with AES-256-GCM; secrets are revealed only on explicit request.
+
+### Built for long-running work
+
+- Conversation checkpoints keep structured notes and the user's exact words; `search_chat_history` can retrieve the original text.
+- Tool loops are compressed against a token budget instead of failing.
+- A restarted worker resumes from the last tool round instead of replaying the whole task.
+- Interjections sent while a bot is working are delivered before its next model call; `/side` asks a question without interrupting or writing to the transcript.
+- `send_to_agent` replies and subagent results wake the initiator, with relay and wake-up limits.
+- Group goals let the lead bot align acceptance criteria with you, split phases, assign work, and verify each phase with evidence — then stop when done.
+
+### Memory that behaves like memory
+
+Relevance-thresholded recall, write-time deduplication, rejection of suspected secrets, idle-time review, recoverable daily consolidation, pinning and archiving. Embeddings can come from a self-hosted service or any OpenAI-compatible endpoint.
+
+### Multi-model, observable, self-hosted
+
+- OpenAI-compatible providers (DeepSeek, Qwen, Moonshot, GLM, Volcengine Ark, Ollama, …) and the Anthropic Messages API.
+- Retries with `Retry-After` handling, streaming idle-timeout detection, per-provider timeouts.
+- Every message, tool call, token count and cost lands in an event stream that can be replayed and audited.
+- Self-hosted embedding, STT and TTS services are included in the deployment stack.
+- WebAuthn/Passkeys, OIDC/SSO, SMTP, ICS calendars, team accounts and role isolation.
+
+### Desktop app
+
+An Electron client with a frameless window, native menu/tray/notifications, a local device agent, capture overlay, and NSIS auto-update support. The web app remains the source of truth.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  U["Browser / Electron"] -->|"HTTPS · SSE · WebSocket"| C["Caddy"]
+  C -->|"/api/*"| A["Go API"]
+  C -->|"/*"| W["Next.js"]
+  A --> P[("PostgreSQL 18<br/>+ pgvector")]
+  K["Go Worker"] --> P
+  K --> L["LLM providers"]
+  K --> S["Docker sandbox<br/>browser / desktop"]
+  K --> X["MCP · Skills · Memory"]
+  K -->|"allowlisted Docker API"| DP["docker-proxy"]
+  DP --> S
 ```
-浏览器 ── HTTPS/SSE/WebSocket ── Caddy
-                                  ├── /api/* → Go API ── PostgreSQL 18 + pgvector
-                                  └── /*     → Next.js
-Go Worker ── PostgreSQL（SKIP LOCKED 队列 + LISTEN/NOTIFY）
-   ├── Agent Loop（LLM / 工具 / 预算）
-   ├── 编排（圆桌 / 流水线）
-   ├── Skill / MCP / Memory
-   └── Docker Sandbox（base / browser / desktop profile）
-```
 
-- Go 单二进制（`serve` / `worker` / `migrate`），Next.js 16 前端。
-- Postgres 同时承担业务数据、任务队列和事件总线，首版不依赖 Redis。
-- 每个 Bot 一个持久工作区容器；团队共享目录挂载到 `/teams/<team-id>/shared`。
-- 浏览器容器内置 Chromium + Xvfb + x11vnc + noVNC；CDP 通过容器内 TCP 代理暴露给 Worker。
+- A single Go binary provides `serve`, `worker` and `migrate`; the frontend is Next.js 16.
+- PostgreSQL is the business database, the job queue (`SKIP LOCKED`) and the event bus — no Redis required for the first version.
+- Each bot gets a persistent workspace container; teams share a directory mounted at `/teams/<team-id>/shared`.
+- Browser containers include Chromium, Xvfb, x11vnc and noVNC; CDP is exposed to the worker through a container-local proxy.
+- The worker never holds the Docker socket. It talks to `docker-proxy`, which only allows sandbox lifecycle endpoints and validates every create request.
 
-## 当前联调方式
+## Quick start
 
-当前以云服务器为唯一运行/测试环境，本地只做代码编辑和静态检查（`go test` / `npm run build`），不再启动本地 dev server。改完代码后：
+### Production-style deployment with Docker Compose
 
-1. 打包源码并上传到 `/srv/superbot`；
-2. 在服务器执行 `bash deploy/deploy.sh`（或只构建变更的镜像）；
-3. 直接在 `http://202.189.8.109:32608/` 和 `/api/*` 上验收。
-
-## 本地开发（仅供参考）
-
-前置：Go 1.27+、Node 24+、Docker Desktop。
+**Requirements:** Docker Engine + Compose v2, a Linux host. 8 vCPU / 16 GB RAM / 200 GB SSD is a good starting point; 16 vCPU / 32 GB is recommended if you plan to run several browser or desktop bots. Ubuntu 24.04 or Debian 13.
 
 ```bash
-cp .env.example .env            # 填入 SECRET_KEY、ADMIN_PASSWORD、DEEPSEEK_API_KEY
-task dev-infra                 # 启动开发 Postgres（端口 55432）
-task migrate                   # 数据库迁移
-# 三个终端：
-task api
+git clone https://github.com/vulgar-sir/superbot.git
+cd superbot
+
+cp deploy/.env.production.example .env
+# Edit .env: SUPERBOT_SECRET_KEY, SUPERBOT_ADMIN_*,
+# POSTGRES_PASSWORD and your LLM API key.
+
+# Build the API/web image and the two computer images.
+docker compose --env-file .env -f deploy/docker-compose.yml build api web
+docker build -t superbot/computer:latest \
+  -f deploy/images/computer/Dockerfile deploy/images/computer
+docker build -t superbot/computer-desktop:latest \
+  -f deploy/images/computer/Dockerfile.desktop deploy/images/computer
+
+# Start the core stack (SSO, voice and embedding are optional; see below).
+docker compose --env-file .env -f deploy/docker-compose.yml \
+  up -d postgres api worker docker-proxy web caddy
+```
+
+Open **http://localhost:32608** and sign in with the admin account from `.env`.
+
+> **Before exposing superbot to the internet:** put it behind a domain with TLS. WebAuthn/Passkeys require a secure context, and session cookies should not travel over plain HTTP. Set `SUPERBOT_COOKIE_INSECURE=false` and `SUPERBOT_ALLOW_INSECURE_COOKIE=false` once HTTPS is in place. Run `bash deploy/harden-data-permissions.sh` on first deployment.
+
+Optional services in the same compose file:
+
+| Service | Start with | Notes |
+|---|---|---|
+| `dex` | `docker compose ... up -d dex` | Self-hosted OIDC/SSO. Copy `deploy/dex/config.example.yaml` to `dex/config.yaml` first. |
+| `embedding` | `docker compose ... up -d embedding` | Self-hosted `intfloat/multilingual-e5-large`; the first start downloads the model. |
+| `stt` / `tts` | `docker compose ... up -d stt tts` | faster-whisper and Piper voice services. |
+
+The full deployment notes, backup script and integration-test script live in [`deploy/`](deploy/).
+
+### Local development
+
+**Requirements:** Go 1.27+, Node.js 24+, Docker Desktop (or Docker Engine).
+
+```bash
+cp .env.example .env            # fill in SUPERBOT_SECRET_KEY and your API key
+task dev-infra                  # local Postgres on port 55432
+task migrate                    # apply database migrations
+
+# in three terminals:
+task api                        # http://127.0.0.1:8080
 task worker
-task web                       # http://127.0.0.1:3000
+task web                        # http://127.0.0.1:3000
 ```
 
-首次启动会自动创建管理员，并在没有 Provider 时用 `SUPERBOT_DEEPSEEK_API_KEY` 种子化 DeepSeek。
+Without [Task](https://taskfile.dev/), run `go run ./cmd/superbot serve`, `go run ./cmd/superbot worker` and `npm run dev` in `web/` directly.
 
-## 生产部署（单机 Docker Compose）
+On first boot superbot creates the admin account. With no provider configured, `SUPERBOT_DEEPSEEK_API_KEY` is used to seed a DeepSeek provider.
 
-服务器建议 8C16G / 200GB SSD，Ubuntu 24.04 或 Debian 13；同时跑多个浏览器/桌面 Bot 建议 16C32G。
+## Configuration
 
-```bash
-# 源码放到 /srv/superbot，.env 放在同一目录
-cd /srv/superbot
-docker compose --env-file .env -f deploy/docker-compose.yml build
-docker build -t superbot/computer:latest -f deploy/images/computer/Dockerfile deploy/images/computer
-docker build -t superbot/computer-desktop:latest -f deploy/images/computer/Dockerfile.desktop deploy/images/computer
-docker compose --env-file .env -f deploy/docker-compose.yml up -d
-```
+The templates document every supported variable:
 
-> 注意：`POSTGRES_PASSWORD` 等变量由 `--env-file .env` 提供；不要省略这个参数。
+- [`.env.example`](.env.example) — local development.
+- [`deploy/.env.production.example`](deploy/.env.production.example) — production Compose.
 
-服务：
-
-| 组件 | 作用 |
+| Variable | Purpose |
 |---|---|
-| `caddy` | 对外入口（默认 `32608:80`），`/api/*` 反代 Go API，SSE/WebSocket 已配置 |
-| `web` | Next.js 前端 |
-| `api` | REST + SSE |
-| `worker` | Agent 运行时、编排、Docker 沙箱、定时任务（经 `docker-proxy` 访问 Docker） |
-| `docker-proxy` | 唯一持有 Docker socket 的服务；只放行沙箱生命周期端点，校验容器创建，代建工作区目录 |
-| `postgres` | 业务数据 + pgvector |
+| `SUPERBOT_SECRET_KEY` | 32 random bytes, base64. Encrypts provider/MCP secrets. Losing it makes existing ciphertext unrecoverable. |
+| `SUPERBOT_DATABASE_URL` | PostgreSQL DSN. |
+| `SUPERBOT_ADMIN_EMAIL` / `SUPERBOT_ADMIN_PASSWORD` | First-boot admin account. |
+| `SUPERBOT_DATA_DIR` | Workspaces, skills, attachments and artifacts. |
+| `SUPERBOT_SANDBOX_NETWORK` | Set to `superbot_sandbox` in production. |
+| `SUPERBOT_SANDBOX_IMAGE` | Defaults to `superbot/computer:latest`. |
+| `SUPERBOT_ALLOW_INSECURE_COOKIE` | Must be explicitly `true` for plain-HTTP deployments. |
+| `SUPERBOT_COOKIE_INSECURE` | Set to `false` behind HTTPS. |
 
-国内网络注意：
+## Security model
 
-- Docker 镜像加速写在 `/etc/docker/daemon.json`，本仓库部署脚本使用 `docker.1ms.run` 等可用源。
-- 基础镜像预拉后打本地标签，避免构建时依赖 Docker Hub 直连。
-- `SUPERBOT_DEEPSEEK_API_KEY` 只放在 `.env`，不要提交。
+superbot executes real commands, so the security boundaries are part of the design, not an afterthought:
 
-`deploy/deploy.sh` 和 `deploy/backup.sh` 提供了构建/升级与备份的简写。
+- Provider and MCP secrets are encrypted with AES-256-GCM and never returned in plaintext by the API.
+- File tools are confined with Go's `os.Root`; `fetch_url` blocks private networks, loopback and cloud metadata endpoints.
+- Sandboxes are non-privileged, drop all capabilities, set resource limits and get isolated workspaces. Each bot mounts only the shared directory of the teams it belongs to. Production browser containers join a dedicated Docker network and publish no host ports.
+- The worker has no Docker socket. `docker-proxy` allowlists only sandbox lifecycle endpoints and validates every create request. API and worker run as uid 1000; run `deploy/harden-data-permissions.sh` so sandbox mount sources are read-only to them.
+- MCP and skill content is treated as untrusted input. Extension changes are written to the audit log.
+- Vault entries are encrypted at rest and revealed only through an explicit action.
 
-`deploy/run-integration-tests.sh` 在服务器上用一次性数据库 `superbot_test` 跑单元测试和引擎/记忆集成测试（真实 Postgres + 指令驱动的内置 mock 模型，不消耗 token，不碰生产数据）。
+Please read [`SECURITY.md`](SECURITY.md) before exposing an instance to the internet, and report vulnerabilities privately rather than in a public issue.
 
-- **自托管 embedding**：compose 的 `embedding` 服务首次启动会从 `hf-mirror.com` 下载 `intfloat/multilingual-e5-large`（1024 维）并缓存在 `superbot_embedding_models` 卷；`.env` 配 `SUPERBOT_EMBEDDING_BASE_URL=http://embedding:8090`、`SUPERBOT_EMBEDDING_MODEL`、任意非空 `SUPERBOT_EMBEDDING_API_KEY`，重启 api/worker 后执行 `/app/superbot reembed-memory`。
-- **自托管语音**：compose 的 `stt`（faster-whisper-small，中文）与 `tts`（Piper `zh_CN-huayan-medium`）分别缓存模型/音色；`.env` 配 `SUPERBOT_STT_URL=http://stt:8000/v1/audio/transcriptions`、`SUPERBOT_TTS_URL=http://tts:8091/v1/audio/speech` 及对应 model/voice/key，`/api/capabilities` 的 voice 变为 available。
-- **自托管 OIDC**：compose `dex` 服务（GHCR 镜像）通过 Caddy `/dex` 提供 SSO；按 `deploy/dex/README.md` 生成 `/srv/superbot/dex/config.yaml` 并配置 `SUPERBOT_OIDC_*` 后，登录页出现「使用 SSO 登录」。
-- **可靠性 soak**：`python3 deploy/soak.py` 每分钟检查 Web/API、记忆增删与会话 SSE，结果写 `/srv/superbot/soak.jsonl`；`SUPERBOT_SOAK_HOURS=72` 可跑完整 72h。
+## Documentation
 
-## 关键环境变量
+| Document | Language | What it covers |
+|---|---|---|
+| [`docs/functional-parity-matrix.md`](docs/functional-parity-matrix.md) | 中文 | The single source of truth for feature completeness and verification evidence. |
+| [`docs/configuration-required.md`](docs/configuration-required.md) | 中文 | Features that need external credentials, network access or platform support. |
+| [`docs/pending-verification.md`](docs/pending-verification.md) | 中文 | Items still awaiting real-world verification. |
+| [`docs/ui-parity-checklist.md`](docs/ui-parity-checklist.md) | 中文 | UI alignment checklist and measurements. |
+| [`deploy/`](deploy/) | English | Compose stack, Caddy, sandbox images, backups, Dex and soak tests. |
+| [`desktop/README.md`](desktop/README.md) | English | Electron client, device agent and auto-update feed. |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | English / 中文 | Development setup, standards and pull-request checklist. |
+| [`ACKNOWLEDGMENTS.md`](ACKNOWLEDGMENTS.md) | English / 中文 | The open-source projects and people this work depends on. |
 
-| 变量 | 说明 |
-|---|---|
-| `SUPERBOT_SECRET_KEY` | 32 字节 base64，加密 Provider/MCP 密钥；丢失后密文不可恢复 |
-| `SUPERBOT_DATABASE_URL` | Postgres DSN |
-| `SUPERBOT_ADMIN_EMAIL` / `SUPERBOT_ADMIN_PASSWORD` | 首次启动的管理员账号 |
-| `SUPERBOT_DATA_DIR` | 工作区、技能、附件目录（容器内与宿主机同路径） |
-| `SUPERBOT_SANDBOX_NETWORK` | 生产环境设为 `superbot_sandbox`；本地留空使用回环端口 |
-| `SUPERBOT_SANDBOX_IMAGE` | 默认 `superbot/computer:latest` |
-| `SUPERBOT_ALLOW_INSECURE_COOKIE` | 纯 HTTP 部署时必须显式设为 `true` |
+Some deep-dive documents are currently written in Chinese; translation contributions are very welcome.
 
-## 使用流程
+## Project status
 
-1. 设置 → 新增 LLM Provider（DeepSeek/Qwen/…），模型目录里维护价格与能力。
-2. 首页侧栏创建 Bot（只需名称和头像，自动选默认模型）；点「详情」编辑标题/描述、移动分组或置顶。
-3. 侧栏「新建群聊」选择最多 6 个 Bot；在输入框用 `@BotName` 点名，被点名的 Bot 才发言，Bot 也可以 @ 队友形成链式协作，或 `send_to_agent` 私信队友。
-4. 右侧「详情」查看 Bot 资料、资料库、记忆；右侧面板管理 Bot 例程；电脑面板支持更新/重置。
-5. 团队页面仍可组建圆桌/流水线/Router 团队：成员顺序、模式、协调者模型、最大轮次。
-6. 会话页发任务；右侧面板看运行、工具、成本；顶栏查看用量与动态。
-7. 扩展页创建 Skill、导入/导出 Bot 模板、接入 HTTP MCP；内置技能自动可用。
-8. 设置 → 电脑添加本地设备，按需允许 Bot 使用；设置 → 保险库保存登录信息；设置 → 账户安全修改密码。
-9. 定时任务页用 cron / `@every 1h` 让团队自动开工；Bot 例程在 Bot 详情/右侧面板管理。
-10. 设置 → 外观切换深色/浅色；输入框支持浏览器语音输入。
+superbot is usable and under active development. The current focus is reliability, security hardening and the desktop client. The parity matrix records exactly what has been verified and what still needs external credentials or platform support — it does not pretend a feature works when it does not.
 
-## 安全边界
+Known limits:
 
-- Provider/MCP 密钥 AES-256-GCM 加密；API 永不回显明文。
-- 文件工具使用 `os.Root` 限定根目录；`fetch_url` 拦截私网/回环/云元数据。
-- 沙箱：非特权、cap-drop ALL、资源限额、独立工作区；每个 Bot 只挂载自己所在团队的共享目录；生产浏览器容器只加入专用 Docker 网络，不发布宿主机端口。
-- Docker：worker 不持有 Docker socket，经 `docker-proxy` 访问，只放行沙箱所需端点并校验每个创建请求；API 与 worker 以 uid 1000 运行，沙箱挂载源及其父目录对它们只读（首次部署执行 `deploy/harden-data-permissions.sh`）。
-- MCP/Skill 内容按不可信输入处理；扩展变更写审计日志。
-- 建议生产环境使用域名 + HTTPS，并把 `SUPERBOT_COOKIE_INSECURE` 关闭。
+- Single-node deployment. No Kubernetes or cross-machine distributed workers yet.
+- No native mobile app.
+- Third-party OAuth applications (Teams, Google, Outlook, meeting platforms, Twilio, X) are intentionally deferred; bring-your-own credentials are supported where implemented.
+- Windows/macOS desktop builds are unsigned by default; production releases need a code-signing certificate.
+- Some optional capabilities need a domain with HTTPS, a public IP with outbound access, or paid third-party accounts.
 
-## 当前边界 / Roadmap
+See [`docs/functional-parity-matrix.md`](docs/functional-parity-matrix.md) for the authoritative status.
 
-- 已实现：单管理员/多账号、主 Bot、侧栏分区、轻量 Bot、Bot 资料/记忆/资料库、DM 复用、群聊 @ 驱动、跨 Bot 私信、动态/未读/搜索、圆桌/流水线/Router-Worker、Bot 级例程（含 webhook / 邮件触发）、Library、浏览器与 XFCE 云电脑（快照/恢复/自动休眠）、本地设备 shell/截图/文件/应用、Vault 与 Bot 安全填表、内置技能、Bot 模板、记忆导入与用户/团队记忆、用量统计、语音输入/通话/语音消息（自托管 STT/TTS）、邮件/日程、连接器、WebAuthn 安全密钥、embedding 自动召回、MCP Apps/Widget、工具调用合并折叠、资料库自动收录（图片/媒体/文档/简单代码、聊天附件与新建文档）、中英文 i18n、深色/浅色主题、修改密码。
-- **Electron 桌面端**：无边框窗口与 46×32 自绘窗口控制、托盘/原生菜单、桌面通知、本地设备代理、捕获 overlay、NSIS 安装包与 `/desktop/` 自动更新 feed（当前 0.1.2）。
-- 完成度以 [`docs/functional-parity-matrix.md`](docs/functional-parity-matrix.md) 为唯一事实来源；需要外部凭据/网络/平台条件的项见 [`docs/configuration-required.md`](docs/configuration-required.md)，未满足时显示 `requires_config` 或平台限制，不伪造成功。
-- 按需接入：GitHub 设备码/Token、Slack webhook、IMAP/SMTP、CalDAV、MCP stdio/HTTP（均需用户自己的凭据；外部 OAuth 应用凭据类按用户要求暂缓）。
-- 首版不支持：移动端原生 App、Kubernetes、跨机分布式 Worker；需要第三方企业租户/付费账号的能力（Teams/Google/Outlook/会议平台/Twilio/X 等）按用户要求暂缓。
+## Contributing
 
-## 目录
+Contributions of all sizes are welcome: bug reports, documentation, translations, UI polish, tests and features.
 
-```
-cmd/superbot        入口（serve/worker/migrate）
-internal/agent      Agent Loop 与团队编排
-internal/llm        多 Provider 归一化
-internal/tools      文件/shell/python/web/memory/skill 工具
-internal/sandbox    Docker 沙箱与电脑容器
-internal/mcpservice HTTP MCP 客户端
-internal/routines   定时任务调度
-internal/goals      群目标状态机
-internal/memory     记忆：召回、去重、回顾、整理
-internal/httpapi    REST + SSE + noVNC 代理
-web                 Next.js 前端
-deploy              Compose / Caddy / 镜像
-migrations          goose 迁移
-```
+1. Read [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
+2. For a large change, open an issue first so we can agree on the scope.
+3. Run `go test ./...`, `go vet ./...`, and `npm run typecheck && npm run build` in `web/` before opening a pull request.
+4. Never include real API keys, server addresses or personal data in code, tests, screenshots or logs.
+
+Security issues must be reported privately — see [`SECURITY.md`](SECURITY.md).
+
+## Acknowledgments
+
+superbot stands on the shoulders of the open-source community. Thanks to the Go, Next.js, React, Tailwind CSS, PostgreSQL/pgvector, Caddy, Docker, Chromium, noVNC, faster-whisper, Piper, Dex, Electron, Playwright and many other projects that make this possible. The full list, and the people who helped test and review the project, is in [`ACKNOWLEDGMENTS.md`](ACKNOWLEDGMENTS.md).
+
+The UI and interaction patterns were informed by modern chat products, including Grok (xAI). All code in this repository is an independent implementation. superbot is not affiliated with, sponsored by, or endorsed by xAI or any other product mentioned in the documentation. Product names and trademarks belong to their respective owners.
+
+## License
+
+superbot is released under the **GNU Affero General Public License v3.0 (AGPL-3.0)**. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
+
+You are free to use, study, modify and self-host superbot, including commercially. If you modify superbot and let users interact with it over a network, the AGPL requires you to offer those users the corresponding source code. If that does not fit your use case, a separate commercial license can be discussed with the maintainer.
+
+Copyright © 2026 qihai (vulgar-sir) and the superbot contributors.

@@ -93,4 +93,4 @@
 
 - `npx tsc --noEmit`、`npm run build`、`go test ./...` 通过。
 - 迁移 0017–0021（隐藏/未读/反应/回复/附件/分享/权限审批）在生产执行成功，API 健康检查通过。
-- 生产 `http://202.189.8.109:32608/` 逐项截图，无 console error。
+- 生产 `https://superbot.example.com/`（示例地址）逐项截图，无 console error。

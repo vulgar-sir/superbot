@@ -1,0 +1,62 @@
+name: Feature request
+description: Suggest a capability, workflow or improvement.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion. Please describe the problem you are trying to solve, not only the implementation you have in mind.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the real workflow or limitation. Concrete examples help.
+      placeholder: "When my team ... we have to ... which costs ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like superbot to do?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you tried, or other designs that might solve the same problem.
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Affected areas
+      options:
+        - label: Backend / agent runtime
+        - label: Web UI
+        - label: Desktop app
+        - label: Sandbox / computers
+        - label: Memory / retrieval
+        - label: Integrations / connectors
+        - label: Documentation / translations
+        - label: Deployment / operations
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Mockups, links, related issues, external APIs or constraints.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and discussions for this idea.
+          required: true
+        - label: I have removed any confidential information from this request.
+          required: true

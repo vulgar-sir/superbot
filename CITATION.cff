@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use superbot in academic work, please cite it as below."
+title: "superbot: self-hosted multi-agent collaboration"
+abstract: "superbot is a self-hosted, open-source platform for creating configurable bots, organizing them into teams, and letting them collaborate in shared rooms with tools, memory, browsers and cloud computers."
+authors:
+  - name: "qihai"
+    alias: "vulgar-sir"
+    website: "https://github.com/vulgar-sir"
+version: "0.1.2"
+date-released: "2026-11-17"
+license: "AGPL-3.0-only"
+repository-code: "https://github.com/vulgar-sir/superbot"
+keywords:
+  - multi-agent
+  - ai-agents
+  - self-hosted
+  - llm
+  - collaboration
+  - golang
+  - nextjs

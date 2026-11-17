@@ -23,7 +23,7 @@ import {
   stopDeviceAgent,
 } from "./deviceAgent";
 
-const WEB_URL = process.env.SUPERBOT_WEB_URL || "http://202.189.8.109:32608/";
+const WEB_URL = process.env.SUPERBOT_WEB_URL || "http://127.0.0.1:3000/";
 const ALLOWED_ORIGIN = new URL(WEB_URL).origin;
 
 type DesktopSettings = {

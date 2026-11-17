@@ -5,19 +5,27 @@
 *.out
 coverage.*
 
-# Secrets
+# Secrets and local notes
 .env
 .env.*
 !.env.example
 !.env.production.example
-deepseek key和服务器地址----不准放入git仓库.txt
 *.pem
 *.key
 /secrets/
+*.local
+*.local.*
+*.secret
+*.secrets
 
 # Runtime data
 /data/
 /tmp/
+/backups/
+deploy/desktop-release/
+soak.jsonl
+*.dump
+*.log
 
 # Frontend
 web/node_modules/
@@ -42,3 +50,6 @@ Thumbs.db
 # Python
 __pycache__/
 *.pyc
+.venv/
+venv/
+.pytest_cache/

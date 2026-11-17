@@ -9,7 +9,7 @@
 - 已用 localhost 安全上下文 + Chrome CDP 虚拟认证器完成真实注册/登录/删除（2026-11-13），协议路径已验证
 - 已修复非默认端口 origin 不匹配：Caddy `X-Forwarded-Host` 改用 `{hostport}`，否则 `:32608` 被丢弃
 - **已用 Cloudflare Quick Tunnel 的真实 HTTPS 域名完成验收（2026-11-14）**：注册凭据 → 清 Cookie → 安全密钥登录成功 → 删除 204；隧道由 cloudflared 提供、证书受浏览器信任、无警告页。生产 HTTP IP 仍非安全上下文，正式上线仍需自己的域名 + TLS；证据 `tmp/parity/passkey/https-cloudflare.md`
-- 生产 80/443 入站被云防火墙拦截（2026-11-14 实测：服务器 `python -m http.server 80` 正常监听，公网 `curl http://202.189.8.109/` 仍为 000），因此无法用 sslip.io/nip.io + Let's Encrypt 自动签发；需要放通 80/443 或提供已有域名证书
+- 部署服务器的 80/443 入站可能被云防火墙拦截（实测：服务器 `python -m http.server 80` 正常监听，公网 `curl http://<server-ip>/` 仍为 000），此时无法用 sslip.io/nip.io + Let's Encrypt 自动签发；需要放通 80/443 或提供已有域名证书
 - 验收：登录页注册/使用安全密钥；设置→登录方式 列出凭据
 
 ## 2. 真实语义记忆（已自托管，无需外部 key）
@@ -47,7 +47,7 @@
 ## 7. 桌面签名 / 自动更新
 
 - Windows NSIS 安装/升级/卸载已实测；代码签名证书按用户要求暂不使用（安装时可能提示未知发布者）
-- 自动更新 feed：`http://202.189.8.109:32608/desktop/`，当前发布 **0.1.2**
+- 自动更新 feed：`https://superbot.example.com/desktop/`（示例地址，部署时替换为你的域名），当前发布 **0.1.2**
 - feed 需要同时提供 `latest.yml`、`stable.yml`、`beta.yml`：electron-updater 在 Windows 按 `<channel>.yml` 解析，只放 `latest.yml` 时 stable/beta 会 404。当前只有一个构建，三份文件指向同一版本；出现独立 beta 后再单独覆盖 `beta.yml`
 - 0.1.1 → 0.1.2 真实自动更新已实测：打包态启动检查 feed（sha512 与 latest.yml 一致）→ 退出时静默安装 → 落盘 `app.asar` 版本 0.1.2；0.1.2 打包态 `checkForUpdates` 返回 `latest 0.1.2`
 - 发布新版本时必须同步更新 `web/package.json`、`desktop/package.json` 与两个 lockfile 的版本号，否则应用内版本显示与更新比较会不一致

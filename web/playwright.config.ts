@@ -1,6 +1,6 @@
 import { defineConfig } from "@playwright/test";
 
-const baseURL = process.env.SUPERBOT_E2E_BASE_URL || "http://202.189.8.109:32608";
+const baseURL = process.env.SUPERBOT_E2E_BASE_URL || "http://127.0.0.1:3000";
 
 export default defineConfig({
   testDir: "e2e",

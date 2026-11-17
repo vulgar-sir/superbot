@@ -21,4 +21,6 @@ linux:
     - AppImage
 publish:
   provider: generic
-  url: http://202.189.8.109:32608/desktop/
+  # Set this to the HTTPS directory that serves latest.yml and the installers.
+  # See desktop/README.md for the expected layout.
+  url: https://updates.example.com/superbot/desktop/

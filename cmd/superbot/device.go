@@ -27,7 +27,7 @@ type devicePollResponse struct {
 
 func runDevice(args []string) error {
 	flags := flag.NewFlagSet("device", flag.ContinueOnError)
-	server := flags.String("server", "", "superbot server URL, e.g. http://202.189.8.109:32608")
+	server := flags.String("server", "", "superbot server URL, e.g. https://superbot.example.com")
 	token := flags.String("token", "", "device token created in Settings → 电脑")
 	interval := flags.Duration("interval", 2*time.Second, "poll interval")
 	once := flags.Bool("once", false, "poll once and exit")

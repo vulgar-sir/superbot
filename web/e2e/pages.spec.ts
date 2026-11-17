@@ -909,7 +909,7 @@ test.describe("superbot management pages", () => {
     const auth = credentials();
     if (!auth) return;
     const api = await playwright.request.newContext({
-      baseURL: process.env.SUPERBOT_E2E_BASE_URL || "http://202.189.8.109:32608",
+      baseURL: process.env.SUPERBOT_E2E_BASE_URL || "http://127.0.0.1:3000",
     });
     try {
       await api.post("/api/auth/login", { data: auth });

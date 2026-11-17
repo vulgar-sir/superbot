@@ -1,11 +1,13 @@
 # superbot × Grok Bot 功能对照矩阵
 
+> 说明：Grok 是 xAI 的商标。本文档仅记录功能对照与兼容性研究，superbot 与 xAI 无隶属、赞助或背书关系；本项目所有代码均为独立实现。
+>
 > 基线：本机 Grok Bot **1.0.1**（2026-11-12 由 0.79.2 强制升级）（Electron）+ superbot 代码盘点（2026-11-12）。
 > 2026-11-13 收尾快照：102 行中 已验证 86、部分 0、not_in_scope 14、requires_config 0、platform_limited 2、未开始 0。
 > 运行时 `/api/capabilities` 仍会因当前环境未配置而返回 `requires_config`（webauthn=HTTP IP、oauth=第三方连接器凭据；oidc 已通过自托管 Dex 变为 available，voice 已通过自托管 STT/TTS 变为 available），这是如实的能力状态，不等于功能未实现。已无未开始项；剩余均为外部凭据/网络/平台限制，见 `docs/configuration-required.md`。
 > 本文件是功能完成度的唯一事实来源；状态为 `已验证` 必须有真实数据、Web/Electron 证据和对照记录。
 > 证据目录：`tmp/parity/<domain>/`。
-> 自动化：`web/e2e/` 对生产执行 **39 passed**：入口/账户（1）、管理页与 Canvas/文档/日历/会议/SSE/帮助弹窗（31）、功能域矩阵（7：保险库、用户记忆、例程、群成员、头像、主 Bot、通知与能力状态）；证据截图归档 `tmp/parity/e2e-2026-11-13/`（18 张）。无法自动化的桌面/硬件/外部项（WebRTC 语音、设备隧道、电脑快照、Web Push、Passkey、安装更新）均有单独实测记录。跑 E2E 必须用 `SUPERBOT_E2E_ENV_FILE=E:\project\superbot\tmp\server.env`（本地 `.env` 的 ADMIN 密码已过期，会 401）。
+> 自动化：`web/e2e/` 对生产执行 **39 passed**：入口/账户（1）、管理页与 Canvas/文档/日历/会议/SSE/帮助弹窗（31）、功能域矩阵（7：保险库、用户记忆、例程、群成员、头像、主 Bot、通知与能力状态）；证据截图归档 `tmp/parity/e2e-2026-11-13/`（18 张）。无法自动化的桌面/硬件/外部项（WebRTC 语音、设备隧道、电脑快照、Web Push、Passkey、安装更新）均有单独实测记录。跑 E2E 必须用 `SUPERBOT_E2E_ENV_FILE=./tmp/server.env`（本地 `.env` 的 ADMIN 密码已过期，会 401）。
 >
 > 说明：Grok 的官方云/账号/订阅/官方市场能力不复刻，按等价自托管实现；未配置的第三方不能标记为完成。
 
@@ -80,7 +82,7 @@
 - **UI 布局（2026-11-13 实测校正）**：Grok 1.0.1 在 1042×764 CSS 视口下侧栏 **240**、聊天列 **482**、信息栏 **320**、头部 **61**；superbot 在 1046 宽桌面窗口下现为 **240 / 483 / 323 / 61**，一致。修正了此前把物理像素当 CSS 像素的问题（旧值 310/353/70）。信息栏在 ≤1180 收窄为 320 并保持停靠，仅 ≤980 变为浮层，避免覆盖聊天内容；欢迎页三段建议改为按 Bot 名称/描述生成（不再全站写死）；Bot 详情栏「最近动态」上方留白由 104px 收到 24px。证据 `tmp/parity/ui-main/after-fix2.png`、`electron-window-final.png`。
 - **Electron 自绘标题栏（2026-11-13 按 Grok 实测重构）**：Grok 1.0.1 的窗口是**无边框 + 原生 caption overlay**：没有独立标题条，右上角浮着 − □ ✕ 三个 46×32 按钮（与页面同底色，Segoe 图标 10px），内容从窗口顶端开始。superbot 改为同规格的自绘版本（`DesktopTitleBar` 只渲染右上角 138×32 控制区，46×32/按钮、10px 图标、hover 7% 混合、关闭键 #c42b1c），取消 36px 条与内容高度偏移；顶部区域（侧栏搜索行、聊天头部、信息栏头部）设为 `-webkit-app-region: drag`，交互子元素 no-drag，另加 8px 兜底拖拽条覆盖无顶栏路由。信息栏关闭时聊天头部右侧预留 138px（与 Grok 的分享按钮位置一致）。实测：真实鼠标拖动窗口 (336,38)→(476,150) 再拖回，按钮 DOM 几何与 Grok 一致。证据 `tmp/parity/ui-main/grok-window-full.png`、`grok-controls-zoom.png`、`superbot-window-full.png`、`superbot-topright-noinfo.png`。
 - **Composer 几何（2026-11-13）**：按 Grok 实测（frame 高 44、圆角 22、按钮 28×28、右侧内边距 8、麦克风与语音/发送间距 8）修正：移除历史遗留的 66px 右侧内边距（曾导致语音/发送键离右边框约 70px），按钮 36→28、输入框最小高 36→28、底部留白 24→16。证据 `tmp/parity/ui-main/superbot-composer-zoom.png`。
-- **生产**：`http://202.189.8.109:32608/`，迁移版本 **69**，页面 200；Electron NSIS 0.1.2 安装包与 `/desktop/` 更新 feed（latest/stable/beta）已验证。
+- **生产**：`https://superbot.example.com/`（示例地址），迁移版本 **69**，页面 200；Electron NSIS 0.1.2 安装包与 `/desktop/` 更新 feed（latest/stable/beta）已验证。
 - **Go Postgres 集成测试**：`internal/store/integration_test.go`（build tag integration）在 API 容器内对生产 Postgres 实测：创建文档 → revision 1→2 → 写 document_event → latest/after 查询 → 删除；PASS，测试数据已清理。另有 SSE 协作与 Docker 沙箱集成测试 PASS。
 - **自动化**：Playwright **39 passed**（登录/账户、Bot/项目/Skill/模板 ACL、任务、搜索、文档、Canvas、日历、会议、SSE 协作、管理页、英文帮助弹窗；功能域矩阵 7 项）；`go test ./...`、`tsc`、`next build`、Electron build 通过；CalDAV/STT/TTS 有 mock 单测。
 - **i18n 基座**：补齐缺失的 `web/components/LanguageProvider.tsx`（zh/en 词典、localStorage 持久化），修复 bots/teams/routines 三页构建；主界面其余页面仍未接入，故语言项保持部分。

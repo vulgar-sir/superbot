@@ -5,7 +5,7 @@ reads `SUPERBOT_OIDC_ISSUER`, `SUPERBOT_OIDC_CLIENT_ID`,
 `SUPERBOT_OIDC_CLIENT_SECRET`, `SUPERBOT_OIDC_REDIRECT_URL` from `.env`.
 
 1. Copy `config.example.yaml` to `/srv/superbot/dex/config.yaml` and replace:
-   - `YOUR_HOST` with the public host (including port, e.g. `202.189.8.109:32608`)
+   - `YOUR_HOST` with the public host (including the port when non-default, e.g. `superbot.example.com:32608`)
    - `REPLACE_WITH_RANDOM_SECRET` with a random client secret
    - `YOUR_ADMIN_EMAIL` with the existing admin email (so OIDC logs into the
      same account instead of JIT-creating a second one)
