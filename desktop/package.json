@@ -24,10 +24,10 @@
     "electron-updater": "^6.6.2"
   },
   "devDependencies": {
-    "@types/node": "^24.0.0",
-    "electron": "^42.0.0",
+    "@types/node": "^26.6.6",
+    "electron": "^45.3.2",
     "electron-builder": "^26.0.12",
-    "electron-vite": "^4.0.0",
-    "typescript": "^5.9.0"
+    "electron-vite": "^6.0.0",
+    "typescript": "^7.0.2"
   }
 }
