@@ -22,6 +22,9 @@ type Props = {
   settingPrimary: boolean;
   primaryError: string | null;
   onSetPrimary: () => void;
+  /** Personal Bots that can take over when this one is the primary Bot. */
+  primaryCandidates: Bot[];
+  onReplacePrimary: (bot: Bot) => void;
   onClose: () => void;
   onSave: (input: {
     name: string;
@@ -48,6 +51,8 @@ export function BotInfoDialog({
   settingPrimary,
   primaryError,
   onSetPrimary,
+  primaryCandidates,
+  onReplacePrimary,
   onClose,
   onSave,
 }: Props) {
@@ -252,7 +257,49 @@ export function BotInfoDialog({
             {title || bot.description || bot.model || "AI 同事"}
           </div>
         </div>
+        {/* The primary role is handed over here, on every tab: the primary
+            Bot picks its successor, any other personal Bot can take it. */}
+        <div className="flex shrink-0 items-center gap-2">
+          {settingPrimary && <Loader2 className="sb-spin h-3.5 w-3.5 text-[var(--sb-text-3)]" />}
+          {isPrimary ? (
+            primaryCandidates.length > 0 && (
+              <select
+                value=""
+                disabled={settingPrimary}
+                onChange={(event) => {
+                  const next = primaryCandidates.find((candidate) => candidate.id === event.target.value);
+                  if (next) onReplacePrimary(next);
+                }}
+                className="h-8 max-w-[180px] rounded-lg bg-[var(--sb-hover)] px-2.5 text-[12px] text-[var(--sb-text)] outline-none"
+                aria-label="更换主 Bot"
+                title="原主 Bot 创建的 Bot 会移到未分组，不会被删除"
+              >
+                <option value="">更换主 Bot…</option>
+                {primaryCandidates.map((candidate) => (
+                  <option key={candidate.id} value={candidate.id}>{candidate.name}</option>
+                ))}
+              </select>
+            )
+          ) : bot.kind === "team" ? null : (
+            <button
+              type="button"
+              disabled={settingPrimary}
+              onClick={onSetPrimary}
+              className="sb-btn"
+              data-variant="secondary"
+              data-size="sm"
+            >
+              <Sparkles className="h-3.5 w-3.5" />
+              设为主 Bot
+            </button>
+          )}
+        </div>
       </div>
+      {primaryError && (
+        <div className="mt-3 rounded-lg bg-[var(--sb-danger-soft)] px-3 py-2 text-[12px] text-[var(--sb-danger)]">
+          {primaryError}
+        </div>
+      )}
 
       <div className="sb-tabs mt-4 border-b border-[var(--sb-border)] pb-2">
         {tabs.map((entry) => (
@@ -425,27 +472,11 @@ export function BotInfoDialog({
               {exporting ? <Loader2 className="sb-spin h-3.5 w-3.5" /> : <Download className="h-3.5 w-3.5" />}
               导出模板
             </button>
-            {isPrimary ? (
-              <span className="text-[12px] text-[var(--sb-text-2)]">当前主 Bot</span>
-            ) : (
-              <button
-                type="button"
-                disabled={settingPrimary || bot.kind === "team"}
-                onClick={onSetPrimary}
-                title={bot.kind === "team" ? "Team Bot 不能设为主 Bot" : "设为主 Bot"}
-                className="sb-btn"
-                data-variant="secondary"
-                data-size="sm"
-              >
-                {settingPrimary ? <Loader2 className="sb-spin h-3.5 w-3.5" /> : <Sparkles className="h-3.5 w-3.5" />}
-                {bot.kind === "team" ? "Team Bot 不能设为主 Bot" : "设为主 Bot"}
-              </button>
-            )}
           </div>
 
-          {(error || primaryError) && (
+          {error && (
             <div className="rounded-lg bg-[var(--sb-danger-soft)] px-3 py-2 text-[12px] text-[var(--sb-danger)]">
-              {error || primaryError}
+              {error}
             </div>
           )}
         </div>

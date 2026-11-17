@@ -39,6 +39,7 @@ import type {
   User,
   VaultItem,
   VaultReveal,
+  Bot,
 } from "@/lib/types";
 import { playNotificationSound } from "@/lib/notificationSound";
 import { notifyDataSharing } from "@/components/ClientErrorReporter";
@@ -133,13 +134,17 @@ export function SettingsScreen({
   embedded = false,
   initialSection,
   onClose,
+  onPrimaryBotChange,
 }: {
   embedded?: boolean;
   initialSection?: string;
   onClose?: () => void;
+  onPrimaryBotChange?: (user: User) => void;
 }) {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
+  const [personalBots, setPersonalBots] = useState<Bot[]>([]);
+  const [primarySaving, setPrimarySaving] = useState(false);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [models, setModels] = useState<Record<string, Model[]>>({});
   const [booting, setBooting] = useState(true);
@@ -477,6 +482,12 @@ export function SettingsScreen({
           ]);
         if (cancelled) return;
         setUser(me.user);
+        api
+          .listBots()
+          .then((result) => {
+            if (!cancelled) setPersonalBots(result.bots.filter((bot) => bot.kind !== "team"));
+          })
+          .catch(() => undefined);
         setProviders(response.providers);
         setVaultItems(vaultResponse.items);
         setDevices(devicesResponse.devices);
@@ -1032,6 +1043,51 @@ export function SettingsScreen({
               </div>
             ) : (
               <div className="h-11 animate-pulse rounded-lg bg-[var(--sb-hover)]" />
+            )}
+            {user && (
+              <>
+                <div className="my-4 h-px bg-[var(--sb-border)]" />
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="min-w-0 flex-1 basis-[260px]">
+                    <div className="text-[14px]">{t("settings.primaryBot")}</div>
+                    <div className="text-[11.5px] leading-[16px] text-[var(--sb-text-3)]">
+                      {personalBots.length > 0 ? t("settings.primaryBotHint") : t("settings.primaryBotEmpty")}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {primarySaving && <Loader2 className="sb-spin h-3.5 w-3.5 text-[var(--sb-text-3)]" />}
+                    <select
+                      value={user.primary_bot_id ?? ""}
+                      disabled={primarySaving || personalBots.length === 0}
+                      onChange={(event) => {
+                        const botId = event.target.value;
+                        if (!botId || botId === user.primary_bot_id) return;
+                        setPrimarySaving(true);
+                        api
+                          .setPrimaryBot(botId)
+                          .then((result) => {
+                            setUser(result.user);
+                            onPrimaryBotChange?.(result.user);
+                            toast(t("sidebar.primarySet", { name: result.primary_bot.name }), "success");
+                          })
+                          .catch((err) => {
+                            toast(err instanceof ApiError ? err.message : t("sidebar.primaryFailed"), "danger");
+                          })
+                          .finally(() => setPrimarySaving(false));
+                      }}
+                      className="h-9 max-w-[210px] rounded-lg bg-[var(--sb-hover)] px-3 text-[13px] text-[var(--sb-text)] outline-none"
+                      aria-label={t("settings.primaryBot")}
+                    >
+                      {!personalBots.some((bot) => bot.id === user.primary_bot_id) && (
+                        <option value="">{t("settings.primaryBotNone")}</option>
+                      )}
+                      {personalBots.map((bot) => (
+                        <option key={bot.id} value={bot.id}>{bot.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </>
             )}
           </section>
 

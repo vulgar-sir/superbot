@@ -244,6 +244,94 @@ test.describe("runtime features in the browser", () => {
     }
   });
 
+  test("the primary bot can be replaced from the menu, its profile and settings", async ({ page }) => {
+    test.setTimeout(180_000);
+    await login(page);
+    type ListedBot = {
+      id: string;
+      name: string;
+      title: string;
+      description: string;
+      avatar: string;
+      avatar_shape: string;
+      avatar_color: string;
+      section_id: string | null;
+      position: number;
+      pinned: boolean;
+      created_by_bot_id: string | null;
+    };
+    const listBots = async () => ((await (await page.request.get("/api/bots")).json()).bots ?? []) as ListedBot[];
+    const primaryId = async () => (await (await page.request.get("/api/auth/me")).json()).user.primary_bot_id as string;
+    const original = await primaryId();
+    // Handing over the role moves the old primary's own Bots out of their
+    // sections; remember where they were so the account is left as found.
+    const placements = (await listBots()).filter((bot) => bot.created_by_bot_id === original);
+    const bot = await createBot(page.request, "主");
+    const primaryCard = page.locator(".sb-primary-card").first();
+    try {
+      await page.goto("/");
+      // 1. Sidebar menu of an ordinary Bot.
+      await page.locator("aside").getByText(bot.name, { exact: true }).first().click({ button: "right" });
+      await page.getByRole("menuitem", { name: "设为主 Bot" }).click();
+      await expect(page.getByText(`${bot.name} 已成为主 Bot`)).toBeVisible();
+      await expect.poll(primaryId).toBe(bot.id);
+      await expect(primaryCard).toContainText(bot.name);
+
+      // The primary card's own menu offers no delete, hide, pin or move.
+      await primaryCard.click({ button: "right" });
+      await expect(page.getByRole("menuitem", { name: "编辑 Bot 资料" })).toBeVisible();
+      await expect(page.getByRole("menuitem", { name: "删除", exact: true })).toHaveCount(0);
+      await expect(page.getByRole("menuitem", { name: "从侧边栏隐藏" })).toHaveCount(0);
+      await expect(page.getByRole("menuitem", { name: "设为主 Bot" })).toHaveCount(0);
+
+      // 2. The primary Bot's own profile can hand the role back.
+      await page.getByRole("menuitem", { name: "编辑 Bot 资料" }).click();
+      const replace = page.getByRole("combobox", { name: "更换主 Bot" });
+      await expect(replace).toBeVisible();
+      await page.screenshot({ path: path.join(shotsDir, "primary-replace-dialog.png") });
+      await replace.selectOption(original);
+      await expect.poll(primaryId).toBe(original);
+      // The dialog stays on this Bot, which can now take the role back.
+      await expect(page.getByRole("button", { name: "设为主 Bot", exact: true })).toBeVisible();
+      await expect(replace).toHaveCount(0);
+      await page.keyboard.press("Escape");
+
+      // 3. Settings → General.
+      await page.goto("/settings");
+      const select = page.getByRole("combobox", { name: "主 Bot", exact: true });
+      await expect(select).toHaveValue(original);
+      await select.selectOption(bot.id);
+      await expect.poll(primaryId).toBe(bot.id);
+      await page.screenshot({ path: path.join(shotsDir, "primary-settings.png") });
+      await select.selectOption(original);
+      await expect.poll(primaryId).toBe(original);
+    } finally {
+      if ((await primaryId()) !== original) {
+        await page.request.post("/api/account/primary-bot", { data: { bot_id: original } });
+      }
+      const now = new Map((await listBots()).map((item) => [item.id, item]));
+      for (const before of placements) {
+        const current = now.get(before.id);
+        if (!current || current.section_id === before.section_id) continue;
+        await page.request.patch(`/api/bots/${before.id}/profile`, {
+          data: {
+            name: current.name,
+            title: current.title,
+            description: current.description,
+            avatar: current.avatar,
+            avatar_shape: current.avatar_shape,
+            avatar_color: current.avatar_color,
+            section_id: before.section_id,
+            position: before.position,
+            pinned: current.pinned,
+          },
+        });
+      }
+      await page.request.delete(`/api/bots/${bot.id}`, { data: {} });
+    }
+    expect(await primaryId()).toBe(original);
+  });
+
   test("a new bot comes with its own computer on standby", async ({ page }) => {
     test.setTimeout(180_000);
     await login(page);

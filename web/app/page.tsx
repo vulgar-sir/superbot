@@ -1349,22 +1349,32 @@ export default function HomePage() {
     [createTeamConversation, openConversation, refreshSidebar],
   );
 
-  const setPrimaryBot = useCallback(async () => {
-    if (!infoBot) return;
-    setSettingPrimary(true);
-    setPrimaryError(null);
-    try {
-      const result = await api.setPrimaryBot(infoBot.id);
-      setUser(result.user);
-      setInfoBot(result.primary_bot);
-      await refreshSidebar();
-      toast("已设为主 Bot", "success");
-    } catch (err) {
-      setPrimaryError(err instanceof ApiError ? err.message : "设为主 Bot 失败");
-    } finally {
-      setSettingPrimary(false);
-    }
-  }, [infoBot, refreshSidebar, toast]);
+  // Hands the primary role to another personal Bot, from the sidebar menu,
+  // the Bot profile dialog or Settings.
+  const setPrimaryBot = useCallback(
+    async (bot: Bot, from: "dialog" | "menu" = "menu") => {
+      setSettingPrimary(true);
+      setPrimaryError(null);
+      try {
+        const result = await api.setPrimaryBot(bot.id);
+        setUser(result.user);
+        // The open profile stays on the Bot it was opened for; it only needs
+        // the fresh copy when that Bot is the one that became primary.
+        if (from === "dialog") {
+          setInfoBot((current) => (current?.id === result.primary_bot.id ? result.primary_bot : current));
+        }
+        await refreshSidebar();
+        toast(t("sidebar.primarySet", { name: result.primary_bot.name }), "success");
+      } catch (err) {
+        const message = err instanceof ApiError ? err.message : t("sidebar.primaryFailed");
+        if (from === "dialog") setPrimaryError(message);
+        else toast(message, "danger");
+      } finally {
+        setSettingPrimary(false);
+      }
+    },
+    [refreshSidebar, t, toast],
+  );
 
   const saveBotProfile = useCallback(
     async (payload: {
@@ -1528,6 +1538,7 @@ export default function HomePage() {
         collapsed={sidebarCollapsed}
         onOpenBot={(bot) => void openBot(bot)}
         onOpenInfo={(bot) => openInfo(bot)}
+        onSetPrimary={(bot) => setPrimaryBot(bot)}
         onOpenGroup={(team) => void openGroup(team)}
         onNewBot={() => {
           setNewBotError(null);
@@ -2091,7 +2102,9 @@ export default function HomePage() {
           isPrimary={user.primary_bot_id === infoBot.id}
           settingPrimary={settingPrimary}
           primaryError={primaryError}
-          onSetPrimary={() => void setPrimaryBot()}
+          onSetPrimary={() => void setPrimaryBot(infoBot, "dialog")}
+          primaryCandidates={bots.filter((bot) => bot.kind !== "team" && bot.id !== infoBot.id)}
+          onReplacePrimary={(bot) => void setPrimaryBot(bot, "dialog")}
           onClose={() => {
             setInfoBot(null);
             setPrimaryError(null);
@@ -2203,6 +2216,10 @@ export default function HomePage() {
               embedded
               initialSection={settingsSection}
               onClose={() => setSettingsOpen(false)}
+              onPrimaryBotChange={(next) => {
+                setUser(next);
+                void refreshSidebar();
+              }}
             />
           </div>
         </div>

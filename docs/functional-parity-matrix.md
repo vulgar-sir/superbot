@@ -171,7 +171,7 @@
 | 头像上传/生成 | 上传/生成 | 头像面板「上传 / 生成」 | 已验证(Web) | P0B/P7 | 新增 `POST/GET/DELETE /api/bots/{id}/avatar` 与 `POST /avatar/generate`：真实 PNG 上传→侧栏/头部/详情三处 `<img>` 渲染（naturalWidth 1024）→移除回退形状头像；真实生图 1024×1024 PNG 161KB 生成并展示；非图片 400、未配置生图返回 requires_config。文件存 `DataDir/avatars/{botID}`，版本号防缓存 |
 | Bot 资料/标题/描述 | Bot 设置 | BotInfoDialog | 已验证(Web) | P0B | 侧栏右键/名称铅笔可打开；含 Provider/模型 |
 | Bot 模型/Provider/参数 | Bot 设置 | Bot 设置弹窗 Provider/模型/参数 | 已验证(Web/API) | P0B | 弹窗可选 Provider/模型，参数以 JSON 编辑器编辑；保存资料后补调 `PATCH /api/bots` 全量载荷（修复模型选择丢失）。生产实测参数 `{temperature:0.3, top_p:0.9}` PATCH 200 并读回一致；当前只配置了一个模型，无法做换模型对照（接口路径已验证） |
-| 主 Bot 设置/更换 | 账户/Bot | Bot 设置弹窗「设为主 Bot / 当前主 Bot」 | 已验证(Web) | P0B/P2 | 生产实测 `POST /api/account/primary-bot` 切换主 Bot 后 `/api/auth/me` 立即变更，再切回原 Bot；删除主 Bot 返回 409 并提示先更换（明确守卫，不是死锁） |
+| 主 Bot 设置/更换 | 账户/Bot | 侧栏右键「设为主 Bot」；Bot 设置弹窗顶部「设为主 Bot / 更换主 Bot…」；设置 → 通用「主 Bot」下拉；主 Bot 右键无置顶/移动/隐藏/删除 | 已验证(Web) | P0B/P2 | 2026-11-17 修复「主 Bot 无法替换」：此前只有详情栏 hover 铅笔里的按钮，主 Bot 自己的资料页只显示「当前主 Bot」，右键菜单也没有入口。生产 e2e `the primary bot can be replaced from the menu, its profile and settings` 走完三个入口并还原主 Bot 与子 Bot 分组；删除主 Bot 仍返回 409 并提示先更换 |
 | Bot 可见性 OWNER/TEAM | Bot 访问 | BotInfoDialog 可见性 | 已验证(Web/API) | P2 | Bot 设置弹窗提供 owner/account 选择，保存走 `PATCH /api/bots/{id}/profile`；生产实测切到 owner 再切回 account，响应与读回均为对应值。资源级 viewer/editor/runner 授权由下一行覆盖；单用户范围下不展开跨账户可见性 |
 | Bot 访问人员/角色 | 人员/访问 | BotInfoDialog 访问页 | 已验证(Web) | P2 | viewer/editor/runner 授权/撤销已实测 |
 | 群聊创建/成员 | +→New group chat | NewGroupDialog | 已验证 | 已有 | 最多 6 |

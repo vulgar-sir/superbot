@@ -28,6 +28,7 @@ import {
   Search,
   Settings,
   Smartphone,
+  Sparkles,
   Trash2,
   Upload,
   UserRound,
@@ -55,6 +56,7 @@ type Props = {
   collapsed?: boolean;
   onOpenBot: (bot: Bot) => void;
   onOpenInfo: (bot: Bot) => void;
+  onSetPrimary: (bot: Bot) => Promise<void> | void;
   onOpenGroup: (team: Team) => void;
   onNewBot: () => void;
   onNewTeamBot: () => void;
@@ -81,6 +83,7 @@ export function GrokSidebar({
   collapsed,
   onOpenBot,
   onOpenInfo,
+  onSetPrimary,
   onOpenGroup,
   onNewBot,
   onNewTeamBot,
@@ -390,9 +393,8 @@ export function GrokSidebar({
     async (bot: Bot) => {
       if (primaryBotId === bot.id) {
         await confirm({
-          title: `主 Bot「${bot.name}」不能直接删除`,
-          description:
-            "请先在另一个 Bot 上右键 →「编辑 Bot 资料」→「设为主 Bot」，然后再删除它。",
+          title: t("sidebar.primaryDeleteTitle", { name: bot.name }),
+          description: t("sidebar.primaryDeleteDesc"),
           confirmLabel: "知道了",
         });
         return;
@@ -410,16 +412,13 @@ export function GrokSidebar({
         toast("已删除", "success");
       } catch (err) {
         if (err instanceof ApiError && err.code === "primary_bot_required") {
-          toast(
-            "它是主 Bot：先在另一个 Bot 的「编辑 Bot 资料」里设为主 Bot，再删除",
-            "danger",
-          );
+          toast(t("sidebar.primaryDeleteDesc"), "danger");
           return;
         }
         toast(err instanceof ApiError ? err.message : "删除失败", "danger");
       }
     },
-    [confirm, onRefresh, primaryBotId, toast],
+    [confirm, onRefresh, primaryBotId, t, toast],
   );
 
   const copyText = useCallback(
@@ -543,30 +542,38 @@ export function GrokSidebar({
           name: section.name,
         })),
       ];
-      return [
-        {
-          key: "pin",
-          label: bot.pinned ? t("sidebar.unpin") : t("sidebar.pin"),
-          icon: bot.pinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />,
-          onSelect: () => void patchBot(bot, { pinned: !bot.pinned }),
-        },
-        {
-          key: "move",
-          label: t("sidebar.moveTo"),
-          icon: <FolderInput className="h-3.5 w-3.5" />,
-          children: moveTargets.map((target) => ({
-            key: `move-${target.id ?? "none"}`,
-            label: target.name,
-            disabled: (bot.section_id ?? null) === target.id,
-            icon:
-              (bot.section_id ?? null) === target.id ? (
-                <Check className="h-3.5 w-3.5" />
-              ) : (
-                <span className="block h-3.5 w-3.5" />
-              ),
-            onSelect: () => void moveBotToSection(bot, target.id),
-          })),
-        },
+      // The primary Bot has its own card above the sections, so pinning,
+      // moving and hiding would do nothing, and it can't be deleted until
+      // another Bot takes over the role.
+      const isPrimary = bot.id === primaryBotId;
+      const items: Array<MenuItem | null> = [
+        isPrimary
+          ? null
+          : {
+              key: "pin",
+              label: bot.pinned ? t("sidebar.unpin") : t("sidebar.pin"),
+              icon: bot.pinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />,
+              onSelect: () => void patchBot(bot, { pinned: !bot.pinned }),
+            },
+        isPrimary
+          ? null
+          : {
+              key: "move",
+              label: t("sidebar.moveTo"),
+              icon: <FolderInput className="h-3.5 w-3.5" />,
+              children: moveTargets.map((target) => ({
+                key: `move-${target.id ?? "none"}`,
+                label: target.name,
+                disabled: (bot.section_id ?? null) === target.id,
+                icon:
+                  (bot.section_id ?? null) === target.id ? (
+                    <Check className="h-3.5 w-3.5" />
+                  ) : (
+                    <span className="block h-3.5 w-3.5" />
+                  ),
+                onSelect: () => void moveBotToSection(bot, target.id),
+              })),
+            },
         {
           key: "unread",
           label: t("sidebar.markUnread"),
@@ -584,26 +591,45 @@ export function GrokSidebar({
           },
         },
         {
+          key: "edit",
+          label: t("detail.editProfile"),
+          icon: <Settings className="h-3.5 w-3.5" />,
+          onSelect: () => onOpenInfo(bot),
+        },
+        isPrimary || bot.kind === "team"
+          ? null
+          : {
+              key: "make-primary",
+              label: t("sidebar.makePrimary"),
+              icon: <Sparkles className="h-3.5 w-3.5" />,
+              onSelect: () => void onSetPrimary(bot),
+            },
+        {
           key: "copy-id",
           label: t("sidebar.copyConversationId"),
           icon: <Copy className="h-3.5 w-3.5" />,
           onSelect: () => void copyBotConversationID(bot),
         },
-        { key: "sep-copy", separator: true },
-        {
-          key: "hide",
-          label: t("sidebar.hide"),
-          icon: <EyeOff className="h-3.5 w-3.5" />,
-          onSelect: () => void hideBot(bot),
-        },
-        {
-          key: "delete",
-          label: t("common.delete"),
-          icon: <Trash2 className="h-3.5 w-3.5" />,
-          danger: true,
-          onSelect: () => void deleteBot(bot),
-        },
+        ...(isPrimary
+          ? []
+          : [
+              { key: "sep-copy", separator: true },
+              {
+                key: "hide",
+                label: t("sidebar.hide"),
+                icon: <EyeOff className="h-3.5 w-3.5" />,
+                onSelect: () => void hideBot(bot),
+              },
+              {
+                key: "delete",
+                label: t("common.delete"),
+                icon: <Trash2 className="h-3.5 w-3.5" />,
+                danger: true,
+                onSelect: () => void deleteBot(bot),
+              },
+            ]),
       ];
+      return items.filter((item): item is MenuItem => item !== null);
     },
     [
       copyBotConversationID,
@@ -612,7 +638,9 @@ export function GrokSidebar({
       markUnreadBot,
       moveBotToSection,
       onOpenInfo,
+      onSetPrimary,
       patchBot,
+      primaryBotId,
       sections,
       t,
     ],
