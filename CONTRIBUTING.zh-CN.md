@@ -85,7 +85,7 @@ cd desktop
 npm run typecheck
 ```
 
-CI 会运行 gofmt、`go vet`、sqlc 生成检查、Go 测试、基于真实 Postgres 的集成测试，以及 Next.js 的 typecheck/build。
+CI 会运行 gofmt、`go vet`、sqlc 生成检查、Go 测试、基于真实 Postgres 的集成测试，以及 Next.js 与 Electron 的 typecheck/build。
 
 ## 项目结构
 

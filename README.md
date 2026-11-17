@@ -117,14 +117,18 @@ docker build -t superbot/computer:latest \
 docker build -t superbot/computer-desktop:latest \
   -f deploy/images/computer/Dockerfile.desktop deploy/images/computer
 
+# One-time data directory layout (root-owned parents, uid-1000 leaves).
+sudo mkdir -p /srv/superbot/data
+sudo bash deploy/harden-data-permissions.sh /srv/superbot/data
+
 # Start the core stack (SSO, voice and embedding are optional; see below).
 docker compose --env-file .env -f deploy/docker-compose.yml \
   up -d postgres api worker docker-proxy web caddy
 ```
 
-Open **http://localhost:32608** and sign in with the admin account from `.env`.
+Open **http://&lt;server&gt;:32608** (or `http://localhost:32608` on the host itself) and sign in with the admin account from `.env`.
 
-> **Before exposing superbot to the internet:** put it behind a domain with TLS. WebAuthn/Passkeys require a secure context, and session cookies should not travel over plain HTTP. Set `SUPERBOT_COOKIE_INSECURE=false` and `SUPERBOT_ALLOW_INSECURE_COOKIE=false` once HTTPS is in place. Run `bash deploy/harden-data-permissions.sh` on first deployment.
+> **Before exposing superbot to the internet:** put it behind a domain with TLS. WebAuthn/Passkeys require a secure context, and session cookies should not travel over plain HTTP. Set `SUPERBOT_COOKIE_INSECURE=false` and `SUPERBOT_ALLOW_INSECURE_COOKIE=false` once HTTPS is in place.
 
 Optional services in the same compose file:
 

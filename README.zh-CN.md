@@ -117,14 +117,18 @@ docker build -t superbot/computer:latest \
 docker build -t superbot/computer-desktop:latest \
   -f deploy/images/computer/Dockerfile.desktop deploy/images/computer
 
+# 一次性数据目录布局（父目录 root 所有，叶子目录 uid 1000）
+sudo mkdir -p /srv/superbot/data
+sudo bash deploy/harden-data-permissions.sh /srv/superbot/data
+
 # 启动核心服务（SSO、语音、embedding 是可选服务，见下）
 docker compose --env-file .env -f deploy/docker-compose.yml \
   up -d postgres api worker docker-proxy web caddy
 ```
 
-打开 **http://localhost:32608**，用 `.env` 里的管理员账号登录。
+打开 **http://&lt;服务器&gt;:32608**（在服务器本机则用 `http://localhost:32608`），用 `.env` 里的管理员账号登录。
 
-> **暴露到公网之前：** 请放在域名和 TLS 后面。WebAuthn/Passkey 需要安全上下文，会话 Cookie 也不应该走明文 HTTP。启用 HTTPS 后把 `SUPERBOT_COOKIE_INSECURE` 和 `SUPERBOT_ALLOW_INSECURE_COOKIE` 设为 `false`。首次部署请执行 `bash deploy/harden-data-permissions.sh`。
+> **暴露到公网之前：** 请放在域名和 TLS 后面。WebAuthn/Passkey 需要安全上下文，会话 Cookie 也不应该走明文 HTTP。启用 HTTPS 后把 `SUPERBOT_COOKIE_INSECURE` 和 `SUPERBOT_ALLOW_INSECURE_COOKIE` 设为 `false`。
 
 同一份 compose 里的可选服务：
 

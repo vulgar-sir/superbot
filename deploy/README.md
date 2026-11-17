@@ -41,7 +41,7 @@ docker compose --env-file .env -f deploy/docker-compose.yml \
   up -d postgres api worker docker-proxy web caddy
 ```
 
-Open `http://localhost:32608`. Optional services (`dex`, `embedding`, `stt`, `tts`) are documented in the main README and the AI deployment guide.
+Open `http://<server>:32608` (or `http://localhost:32608` on the host itself). Optional services (`dex`, `embedding`, `stt`, `tts`) are documented in the main README and the AI deployment guide.
 
 ## Security notes
 

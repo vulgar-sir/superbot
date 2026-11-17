@@ -85,7 +85,7 @@ cd desktop
 npm run typecheck
 ```
 
-The CI workflow runs gofmt, `go vet`, sqlc generation checks, Go tests, integration tests with a real Postgres, and the Next.js typecheck/build.
+The CI workflow runs gofmt, `go vet`, sqlc generation checks, Go tests, integration tests with a real Postgres, and the Next.js and Electron typecheck/build.
 
 ## Project layout
 
