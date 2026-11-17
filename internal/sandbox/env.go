@@ -50,8 +50,7 @@ func computerEnv() []string {
 		"NPM_CONFIG_CACHE=/tmp/.npm",
 		// AppImages unpack themselves instead of needing FUSE.
 		"APPIMAGE_EXTRACT_AND_RUN=1",
-		// GTK programs otherwise look for an accessibility bus that does
-		// not exist and print warnings into every log.
-		"NO_AT_BRIDGE=1",
+		// NO_AT_BRIDGE is decided per session by env.sh: on a desktop the
+		// accessibility bus names the controls desktop_read_screen reports.
 	}
 }

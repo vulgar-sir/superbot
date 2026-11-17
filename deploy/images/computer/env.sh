@@ -20,10 +20,9 @@ SB_APT_ROOT="$HOME/.local/apt"
 : "${NPM_CONFIG_PREFIX:=$HOME/.local}"
 : "${NPM_CONFIG_CACHE:=/tmp/.npm}"
 : "${APPIMAGE_EXTRACT_AND_RUN:=1}"
-: "${NO_AT_BRIDGE:=1}"
 : "${DISPLAY:=:99}"
 export HOME SB_APT_ROOT XDG_CACHE_HOME XDG_RUNTIME_DIR PIP_BREAK_SYSTEM_PACKAGES \
-    NPM_CONFIG_PREFIX NPM_CONFIG_CACHE APPIMAGE_EXTRACT_AND_RUN NO_AT_BRIDGE DISPLAY
+    NPM_CONFIG_PREFIX NPM_CONFIG_CACHE APPIMAGE_EXTRACT_AND_RUN DISPLAY
 
 [ -d "$HOME" ] || mkdir -p "$HOME" 2>/dev/null || true
 
@@ -32,6 +31,19 @@ export HOME SB_APT_ROOT XDG_CACHE_HOME XDG_RUNTIME_DIR PIP_BREAK_SYSTEM_PACKAGES
 if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && [ -r /tmp/dbus.env ]; then
     . /tmp/dbus.env
     export DBUS_SESSION_BUS_ADDRESS
+fi
+# Programs on the desktop publish their buttons, menus and fields over the
+# accessibility bus, which is how desktop_read_screen names the controls on
+# screen (OCR misses single symbols such as "+"). Without a desktop session
+# there is no such bus, and GTK would only print warnings looking for it.
+if [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
+    unset NO_AT_BRIDGE
+    QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1
+    QT_ACCESSIBILITY=1
+    export QT_LINUX_ACCESSIBILITY_ALWAYS_ON QT_ACCESSIBILITY
+else
+    NO_AT_BRIDGE=1
+    export NO_AT_BRIDGE
 fi
 [ -d "$XDG_RUNTIME_DIR" ] || { mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"; } 2>/dev/null || true
 

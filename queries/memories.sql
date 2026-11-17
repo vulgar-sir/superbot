@@ -296,3 +296,17 @@ SET failures = failures + 1,
     last_reviewed_at = now(),
     updated_at = now()
 WHERE conversation_id = sqlc.arg(conversation_id);
+
+-- name: ListUncheckedTeamReviewMemories :many
+-- Group memories the automatic review wrote that have not been checked for
+-- facts about a single person (the review once stored those in the group).
+SELECT * FROM memories
+WHERE scope_type = 'team' AND archived_at IS NULL AND source = 'review'
+  AND NOT (metadata ? 'personal_checked')
+ORDER BY scope_id, created_at
+LIMIT $1;
+
+-- name: MarkMemoryPersonalChecked :exec
+UPDATE memories
+SET metadata = metadata || jsonb_build_object('personal_checked', sqlc.arg(outcome)::text)
+WHERE id = sqlc.arg(id);

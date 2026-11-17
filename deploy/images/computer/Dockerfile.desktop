@@ -6,10 +6,16 @@ FROM ${BASE_IMAGE}
 USER root
 # mousepad gives the bot a plain text editor on the desktop; libglib2.0-bin
 # provides glib-compile-schemas, which userapt uses for GTK programs.
+# at-spi2-core and the Atspi bindings let desktop_read_screen list the
+# buttons, menus and fields programs publish over the accessibility bus.
 RUN apt-get update \
     && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+        at-spi2-core \
         dbus-x11 \
+        gir1.2-atspi-2.0 \
+        libatk-adaptor \
         libglib2.0-bin \
+        python3-gi \
         mousepad \
         xfce4 \
         xfce4-terminal \

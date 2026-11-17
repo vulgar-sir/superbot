@@ -14,7 +14,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
     NPM_CONFIG_PREFIX=/workspace/.home/.local \
     NPM_CONFIG_CACHE=/tmp/.npm \
     APPIMAGE_EXTRACT_AND_RUN=1 \
-    NO_AT_BRIDGE=1 \
     PATH=/workspace/.home/.local/bin:/workspace/.home/.local/apt/usr/bin:/workspace/.home/.local/apt/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     LD_LIBRARY_PATH=/workspace/.home/.local/apt/usr/lib/x86_64-linux-gnu:/workspace/.home/.local/apt/lib/x86_64-linux-gnu:/workspace/.home/.local/apt/usr/lib \
     XDG_DATA_DIRS=/workspace/.home/.local/apt/usr/share:/usr/local/share:/usr/share

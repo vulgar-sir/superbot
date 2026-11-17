@@ -45,3 +45,18 @@ func TestMemoryRecallBlock(t *testing.T) {
 		t.Fatalf("block = %q", block)
 	}
 }
+
+func TestParsePersonalIndexes(t *testing.T) {
+	got, ok := parsePersonalIndexes("结果：\n```json\n{\"personal\": [2, 9, 0, 3]}\n```", 3)
+	if !ok || len(got) != 2 || !got[2] || !got[3] {
+		t.Fatalf("got %v %v; want only the in-range indexes 2 and 3", got, ok)
+	}
+	if got, ok := parsePersonalIndexes(`{"personal": []}`, 3); !ok || len(got) != 0 {
+		t.Fatal("an empty verdict is a verdict: nothing is personal")
+	}
+	for _, reply := range []string{"都不是个人事实", `{"other": [1]}`, `{"personal": `} {
+		if _, ok := parsePersonalIndexes(reply, 3); ok {
+			t.Fatalf("%q holds no verdict", reply)
+		}
+	}
+}

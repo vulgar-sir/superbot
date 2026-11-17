@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"superbot/internal/botmodel"
 	"superbot/internal/llm"
 	"superbot/internal/store"
 )
@@ -113,6 +114,7 @@ func (s *Server) handleCreateProvider(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "could not create provider")
 		return
 	}
+	s.repairBotModels(r)
 	writeJSON(w, http.StatusCreated, map[string]any{"provider": toProviderDTO(provider)})
 }
 
@@ -208,6 +210,7 @@ func (s *Server) handleUpdateProvider(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "could not update provider")
 		return
 	}
+	s.repairBotModels(r)
 	writeJSON(w, http.StatusOK, map[string]any{"provider": toProviderDTO(updated)})
 }
 
@@ -226,6 +229,7 @@ func (s *Server) handleDeleteProvider(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "provider not found")
 		return
 	}
+	s.repairBotModels(r)
 	writeNoContent(w)
 }
 
@@ -385,6 +389,7 @@ func (s *Server) handleCreateModel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "conflict", "model already exists for this provider")
 		return
 	}
+	s.repairBotModels(r)
 	writeJSON(w, http.StatusCreated, map[string]any{"model": toModelDTO(model)})
 }
 
@@ -411,6 +416,7 @@ func (s *Server) handleDeleteModel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "model not found")
 		return
 	}
+	s.repairBotModels(r)
 	writeNoContent(w)
 }
 
@@ -424,4 +430,13 @@ func parseUUIDParam(w http.ResponseWriter, r *http.Request, name string) (uuid.U
 		return uuid.Nil, false
 	}
 	return id, true
+}
+
+// repairBotModels moves bots whose provider or model just went away to a
+// usable one (botmodel.Repair), so changing providers never leaves bots that
+// fail on every turn.
+func (s *Server) repairBotModels(r *http.Request) {
+	if _, err := botmodel.Repair(r.Context(), s.db, accountFrom(r), s.logger); err != nil {
+		s.logger.Warn("repair bot models failed", "error", err)
+	}
 }

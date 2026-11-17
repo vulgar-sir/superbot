@@ -116,8 +116,114 @@ def ocr(image):
             break
 
 
+# Roles worth clicking or typing into; the rest of the accessibility tree
+# (panels, fillers, labels inside buttons) only adds noise.
+CONTROL_ROLES = {
+    "push button", "toggle button", "check box", "radio button", "menu item",
+    "check menu item", "radio menu item", "menu", "combo box", "text", "entry",
+    "password text", "spin button", "slider", "link", "page tab", "list item",
+    "tree item", "icon", "tool bar button", "split button", "table cell",
+}
+
+
+def session_bus():
+    """The desktop session's D-Bus address, which the accessibility bus is
+    found through. This script runs from an exec, outside the session."""
+    addr = os.environ.get("DBUS_SESSION_BUS_ADDRESS", "")
+    if addr:
+        return addr
+    try:
+        with open("/tmp/dbus.env") as handle:
+            for line in handle:
+                if line.startswith("DBUS_SESSION_BUS_ADDRESS="):
+                    addr = line.split("=", 1)[1].strip().rstrip(";").strip("'\"")
+    except OSError:
+        return ""
+    if addr:
+        os.environ["DBUS_SESSION_BUS_ADDRESS"] = addr
+    return addr
+
+
+def controls():
+    """Buttons, menus and fields the programs on screen publish over the
+    accessibility bus, with their names and screen boxes. OCR misses single
+    symbols such as "+" on a button; the accessible name does not."""
+    if not session_bus():
+        return
+    os.environ.pop("NO_AT_BRIDGE", None)
+    try:
+        import gi
+
+        gi.require_version("Atspi", "2.0")
+        from gi.repository import Atspi
+    except (ImportError, ValueError) as exc:
+        out["errors"].append("accessibility unavailable: %s" % exc)
+        return
+    import time
+
+    deadline = time.monotonic() + float(opts.get("controls_seconds", 4))
+    Atspi.set_timeout(800, 1500)
+    found = []
+    visited = [0]
+
+    def walk(node, app, depth):
+        if depth > 40 or visited[0] > 6000 or time.monotonic() > deadline or len(found) >= 400:
+            return
+        visited[0] += 1
+        try:
+            states = node.get_state_set()
+            # The application itself has no SHOWING state; its windows do.
+            if depth > 0 and not states.contains(Atspi.StateType.SHOWING):
+                return
+            role = node.get_role_name() or ""
+            if role in CONTROL_ROLES:
+                box = node.get_extents(Atspi.CoordType.SCREEN)
+                if box.width > 0 and box.height > 0 and box.x >= 0 and box.y >= 0:
+                    name = (node.get_name() or "").strip()
+                    if not name and role in ("text", "entry", "password text"):
+                        name = "(input)"
+                    if name:
+                        found.append({
+                            "r": role, "n": name[:80], "a": app,
+                            "x": box.x, "y": box.y, "w": box.width, "h": box.height,
+                            "off": not states.contains(Atspi.StateType.SENSITIVE),
+                            "act": states.contains(Atspi.StateType.ACTIVE),
+                        })
+            count = node.get_child_count()
+        except Exception:  # an app that stopped answering: skip it
+            return
+        for index in range(min(count, 500)):
+            try:
+                child = node.get_child_at_index(index)
+            except Exception:
+                continue
+            if child is not None:
+                walk(child, app, depth + 1)
+
+    try:
+        desktop = Atspi.get_desktop(0)
+        apps = [desktop.get_child_at_index(i) for i in range(desktop.get_child_count())]
+    except Exception as exc:
+        out["errors"].append("accessibility: %s" % exc)
+        return
+    for app in apps:
+        if app is None:
+            continue
+        try:
+            name = app.get_name() or ""
+        except Exception:
+            continue
+        # The desktop's own furniture is already in the window list.
+        if name in ("xfce4-panel", "xfdesktop", "xfwm4", "xfce4-session", "xfsettingsd"):
+            continue
+        walk(app, name, 0)
+    out["controls"] = found
+
+
 if opts.get("windows", True):
     windows()
+if opts.get("controls", True):
+    controls()
 if opts.get("capture", True):
     screen = capture()
     if screen is not None and opts.get("ocr", True):

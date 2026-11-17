@@ -25,8 +25,13 @@ All notable changes to superbot are documented here. The format follows [Keep a 
 - E5 embeddings use `query:`/`passage:` prefixes with a per-query calibrated threshold; recall follows the bot's memory switch.
 - A bot's home directory persists in its workspace; computer ports sit behind a per-bot secret gate; an optional host firewall (`deploy/sandbox-firewall.sh`) keeps computers off private addresses and the host.
 
+- Desktop screen reading lists the controls programs publish over the accessibility bus (buttons, menus, fields with exact names and click points), so single symbols OCR misses, such as a calculator's "+", are clickable; `find` matches control names first.
+- Bots whose provider was deleted or disabled, or whose model left the provider's list, move automatically to a usable model (their own provider's first model, otherwise the newest enabled provider's) when providers or models change and before a turn; the account is notified which bots moved. A group's coordinator model falls back the same way.
+- Personal facts the earlier review stored in group memory move to the person's own memory where the person is certain (single-member accounts), judged by the group lead's model.
+
 ### Fixed
 
+- Deleting a bot, a group or a user left its memories behind; they are now deleted with it (existing leftovers removed by migration 0074).
 - "Always allow" on an approval card saved a rule named `tool` instead of the tool's name, so it never took effect.
 - Runs paused for approval stayed "running" forever; stale streams no longer linger as typing bubbles.
 - A memory saved while the embedding service was down was reported as failed although it was stored.

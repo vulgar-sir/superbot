@@ -766,6 +766,69 @@ func (q *Queries) ListRecentMemories(ctx context.Context, arg ListRecentMemories
 	return items, nil
 }
 
+const listUncheckedTeamReviewMemories = `-- name: ListUncheckedTeamReviewMemories :many
+SELECT id, owner_id, scope_type, scope_id, content, embedding, metadata, created_at, account_id, embedding_model, source, pinned, archived_at, source_conversation_id, source_ordinal, updated_at FROM memories
+WHERE scope_type = 'team' AND archived_at IS NULL AND source = 'review'
+  AND NOT (metadata ? 'personal_checked')
+ORDER BY scope_id, created_at
+LIMIT $1
+`
+
+// Group memories the automatic review wrote that have not been checked for
+// facts about a single person (the review once stored those in the group).
+func (q *Queries) ListUncheckedTeamReviewMemories(ctx context.Context, limit int32) ([]Memory, error) {
+	rows, err := q.db.Query(ctx, listUncheckedTeamReviewMemories, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Memory{}
+	for rows.Next() {
+		var i Memory
+		if err := rows.Scan(
+			&i.ID,
+			&i.OwnerID,
+			&i.ScopeType,
+			&i.ScopeID,
+			&i.Content,
+			&i.Embedding,
+			&i.Metadata,
+			&i.CreatedAt,
+			&i.AccountID,
+			&i.EmbeddingModel,
+			&i.Source,
+			&i.Pinned,
+			&i.ArchivedAt,
+			&i.SourceConversationID,
+			&i.SourceOrdinal,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markMemoryPersonalChecked = `-- name: MarkMemoryPersonalChecked :exec
+UPDATE memories
+SET metadata = metadata || jsonb_build_object('personal_checked', $1::text)
+WHERE id = $2
+`
+
+type MarkMemoryPersonalCheckedParams struct {
+	Outcome string    `json:"outcome"`
+	ID      uuid.UUID `json:"id"`
+}
+
+func (q *Queries) MarkMemoryPersonalChecked(ctx context.Context, arg MarkMemoryPersonalCheckedParams) error {
+	_, err := q.db.Exec(ctx, markMemoryPersonalChecked, arg.Outcome, arg.ID)
+	return err
+}
+
 const recordMemoryReviewFailure = `-- name: RecordMemoryReviewFailure :exec
 UPDATE memory_review_cursors
 SET failures = failures + 1,

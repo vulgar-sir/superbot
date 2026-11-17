@@ -11,6 +11,10 @@ dbus-launch --sh-syntax > /tmp/dbus.env 2>/dev/null || true
 if [ -f /tmp/dbus.env ]; then
   . /tmp/dbus.env
   export DBUS_SESSION_BUS_ADDRESS
+  # The session publishes its programs' controls on the accessibility bus
+  # (see env.sh); the image default keeps it off for browser computers.
+  unset NO_AT_BRIDGE
+  export QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1 QT_ACCESSIBILITY=1
 fi
 
 # The panel asks on its very first start whether to use the default layout,

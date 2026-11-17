@@ -90,6 +90,7 @@ func (e *Engine) reviewMemories(ctx context.Context) {
 		} else if reviewed > 0 {
 			e.logger.Info("memory review finished", "conversations", reviewed)
 		}
+		e.movePersonalTeamMemories(runCtx)
 		if !tidy {
 			return
 		}

@@ -351,6 +351,9 @@ type Querier interface {
 	ListTeamReviews(ctx context.Context, arg ListTeamReviewsParams) ([]TeamReview, error)
 	ListTeams(ctx context.Context, ownerID uuid.UUID) ([]Team, error)
 	ListToolInvocations(ctx context.Context, runID uuid.UUID) ([]ToolInvocation, error)
+	// Group memories the automatic review wrote that have not been checked for
+	// facts about a single person (the review once stored those in the group).
+	ListUncheckedTeamReviewMemories(ctx context.Context, limit int32) ([]Memory, error)
 	ListUnpushedNotifications(ctx context.Context, limit int32) ([]Notification, error)
 	ListUserMessagesAfterOrdinal(ctx context.Context, arg ListUserMessagesAfterOrdinalParams) ([]Message, error)
 	ListUserMessagesAfterTime(ctx context.Context, arg ListUserMessagesAfterTimeParams) ([]Message, error)
@@ -367,6 +370,7 @@ type Querier interface {
 	MarkBotActivitiesUnread(ctx context.Context, arg MarkBotActivitiesUnreadParams) error
 	MarkBotRoutineRun(ctx context.Context, arg MarkBotRoutineRunParams) (BotRoutine, error)
 	MarkCycleRunsInterrupted(ctx context.Context, cycleID uuid.UUID) error
+	MarkMemoryPersonalChecked(ctx context.Context, arg MarkMemoryPersonalCheckedParams) error
 	MarkNotificationPushed(ctx context.Context, id uuid.UUID) error
 	MarkNotificationRead(ctx context.Context, arg MarkNotificationReadParams) (int64, error)
 	MarkRoutineRun(ctx context.Context, arg MarkRoutineRunParams) (Routine, error)
@@ -395,6 +399,12 @@ type Querier interface {
 	RemovePollVotesForUser(ctx context.Context, arg RemovePollVotesForUserParams) error
 	RemoveTeamBot(ctx context.Context, arg RemoveTeamBotParams) error
 	RenameWebAuthnCredential(ctx context.Context, arg RenameWebAuthnCredentialParams) (WebauthnCredential, error)
+	// Moves an account's bots whose model can no longer be used (the provider
+	// was deleted or disabled, or the model is gone from a provider that lists
+	// its models) to one that can: the first model of their own provider when it
+	// is still enabled, otherwise the first model of the newest enabled LLM
+	// provider. A provider without a model list is taken at its word.
+	RepointStaleBots(ctx context.Context, ownerID uuid.UUID) ([]RepointStaleBotsRow, error)
 	RequestCycleCancel(ctx context.Context, conversationID uuid.UUID) (int64, error)
 	ReserveConversationBudget(ctx context.Context, arg ReserveConversationBudgetParams) (int64, error)
 	ReserveCycleBudget(ctx context.Context, arg ReserveCycleBudgetParams) (int64, error)

@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"superbot/internal/agentchat"
+	"superbot/internal/botmodel"
 	"superbot/internal/browser"
 	"superbot/internal/caldav"
 	"superbot/internal/chat"
@@ -330,6 +331,15 @@ func (e *Engine) runBotTurnSeeded(ctx context.Context, conv store.Conversation, 
 	_ = e.db.TouchBotActivity(ctx, store.TouchBotActivityParams{ID: bot.ID, OwnerID: bot.OwnerID})
 	if err := e.checkWeeklyBudget(ctx, bot.OwnerID); err != nil {
 		return nil, permanent(err)
+	}
+	// A bot whose provider or model went away is moved to a usable one first
+	// (and the account told) instead of failing every turn.
+	if e.botModelStale(ctx, bot) {
+		if moved, err := botmodel.Repair(ctx, e.db, bot.OwnerID, e.logger); err == nil && len(moved) > 0 {
+			if fresh, err := e.db.GetBot(ctx, store.GetBotParams{ID: bot.ID, OwnerID: bot.OwnerID}); err == nil {
+				bot = fresh
+			}
+		}
 	}
 	if bot.ProviderID == nil {
 		return nil, permanent(fmt.Errorf("bot %q has no provider configured", bot.Name))

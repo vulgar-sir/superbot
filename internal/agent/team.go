@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"superbot/internal/botmodel"
 	"superbot/internal/events"
 	"superbot/internal/llm"
 	"superbot/internal/store"
@@ -653,8 +654,22 @@ func (e *Engine) runRoundtable(ctx context.Context, conv store.Conversation, cyc
 func (e *Engine) resolveCoordinator(ctx context.Context, conv store.Conversation, members []store.Bot, cfg teamConfig) (*coordinatorRuntime, error) {
 	providerID := strings.TrimSpace(cfg.CoordinatorProviderID)
 	modelName := strings.TrimSpace(cfg.CoordinatorModel)
+	if providerID != "" && modelName != "" {
+		// A configured coordinator model that went away gives way to the
+		// first member's model rather than stopping the group.
+		if id, err := uuid.Parse(providerID); err != nil || e.modelStale(ctx, conv.CreatedBy, &id, modelName) {
+			providerID, modelName = "", ""
+		}
+	}
 	if providerID == "" || modelName == "" {
 		first := members[0]
+		if e.botModelStale(ctx, first) {
+			if moved, err := botmodel.Repair(ctx, e.db, first.OwnerID, e.logger); err == nil && len(moved) > 0 {
+				if fresh, err := e.db.GetBot(ctx, store.GetBotParams{ID: first.ID, OwnerID: first.OwnerID}); err == nil {
+					first = fresh
+				}
+			}
+		}
 		if first.ProviderID == nil {
 			return nil, fmt.Errorf("team has no provider configured for coordinator")
 		}

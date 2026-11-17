@@ -138,3 +138,30 @@ RETURNING *;
 
 -- name: BotExists :one
 SELECT EXISTS (SELECT 1 FROM bots WHERE id = $1);
+
+-- name: RepointStaleBots :many
+-- Moves an account's bots whose model can no longer be used (the provider
+-- was deleted or disabled, or the model is gone from a provider that lists
+-- its models) to one that can: the first model of their own provider when it
+-- is still enabled, otherwise the first model of the newest enabled LLM
+-- provider. A provider without a model list is taken at its word.
+UPDATE bots AS b
+SET provider_id = t.provider_id, model = t.model, updated_at = now()
+FROM bots AS s
+CROSS JOIN LATERAL (
+    SELECT p.id AS provider_id, m.name AS model
+    FROM providers p
+    JOIN models m ON m.provider_id = p.id
+    WHERE p.owner_id = s.owner_id AND p.type = 'llm' AND p.enabled
+    ORDER BY COALESCE(p.id = s.provider_id, false) DESC, p.created_at DESC, m.created_at, m.name
+    LIMIT 1
+) AS t
+WHERE b.id = s.id
+  AND s.owner_id = $1
+  AND (
+    s.provider_id IS NULL
+    OR NOT EXISTS (SELECT 1 FROM providers p WHERE p.id = s.provider_id AND p.enabled AND p.type = 'llm')
+    OR (EXISTS (SELECT 1 FROM models m WHERE m.provider_id = s.provider_id)
+        AND NOT EXISTS (SELECT 1 FROM models m WHERE m.provider_id = s.provider_id AND m.name = s.model))
+  )
+RETURNING b.id, b.name, b.model, b.provider_id, s.model AS previous_model;

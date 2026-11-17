@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -235,5 +236,39 @@ func TestClickSequenceChainsClicksInOneCommand(t *testing.T) {
 	}
 	if _, _, err := clickSequence([]clickPoint{{X: 1, Y: 1}, {X: -5, Y: 1}}, "", 0, nil); err == nil {
 		t.Fatal("a bad point anywhere in the sequence must be refused")
+	}
+}
+
+func TestScreenListsAccessibleControls(t *testing.T) {
+	capture := screenCapture{
+		Width: 1440, Height: 900,
+		Controls: []screenControl{
+			{Role: "push button", Name: "=", X: 820, Y: 567, W: 58, H: 73},
+			{Role: "push button", Name: "+", X: 755, Y: 607, W: 58, H: 33},
+			{Role: "push button", Name: "+/-", X: 690, Y: 607, W: 58, H: 33},
+			{Role: "menu item", Name: "Edit", X: 600, Y: 308, W: 30, H: 16},
+			{Role: "push button", Name: "MR", X: 755, Y: 447, W: 58, H: 33, Disabled: true},
+		},
+	}
+	out := formatScreen(capture, "", true)
+	for _, want := range []string{"(784,623) [button] +", "(719,623) [button] +/-", "[menu item] Edit", "[button] MR (disabled)"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Index(out, "Edit") > strings.Index(out, "[button] +/-") {
+		t.Fatalf("controls must be listed top to bottom:\n%s", out)
+	}
+	found := formatScreen(capture, "+", false)
+	if !strings.Contains(found, "(784,623) [button] +") || strings.Contains(found, "+/-") {
+		t.Fatalf("find must prefer the exact name over a partial one:\n%s", found)
+	}
+	inRegion := controlsIn(capture.Controls, 740, 590, 100, 60)
+	if len(inRegion) != 1 || inRegion[0].Name != "+" {
+		t.Fatalf("region filter = %+v", inRegion)
+	}
+	var parsed screenCapture
+	if err := json.Unmarshal([]byte(`{"controls":[{"r":"push button","n":"7","a":"galculator","x":1,"y":2,"w":3,"h":4,"off":false}]}`), &parsed); err != nil || len(parsed.Controls) != 1 || parsed.Controls[0].Name != "7" {
+		t.Fatalf("controls JSON from desktop_screen.py = %+v, %v", parsed.Controls, err)
 	}
 }

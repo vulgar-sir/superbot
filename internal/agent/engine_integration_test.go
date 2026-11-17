@@ -362,21 +362,39 @@ func TestIntegrationResumeDoesNotReplayTools(t *testing.T) {
 
 func TestIntegrationPermanentFailureIsNotRetried(t *testing.T) {
 	f := newFixture(t, 128_000, 8_000)
-
-	unconfigured := f.direct(f.bot("NoProvider", false))
-	first := f.send(unconfigured, "你好")
-	f.drain(1)
-	failed := f.cycle(first.Cycle.ID)
-	if failed.Status != "failed" || failed.Attempt != 1 {
-		t.Fatalf("missing provider: status=%s attempt=%d, want failed after 1 attempt", failed.Status, failed.Attempt)
-	}
+	ctx := context.Background()
 
 	rejected := f.direct(f.bot("BadKey", true))
 	second := f.send(rejected, "[[fail:401]] 你好")
 	f.drain(1)
-	failed = f.cycle(second.Cycle.ID)
+	failed := f.cycle(second.Cycle.ID)
 	if failed.Status != "failed" || failed.Attempt != 1 {
 		t.Fatalf("auth failure: status=%s attempt=%d, want failed after 1 attempt", failed.Status, failed.Attempt)
+	}
+
+	// A bot that lost its provider is moved to a usable model before the
+	// turn (botmodel.Repair) and answers.
+	orphan := f.bot("NoProvider", false)
+	moved := f.send(f.direct(orphan), "你好")
+	f.drain(1)
+	if cycle := f.cycle(moved.Cycle.ID); cycle.Status != "done" {
+		t.Fatalf("a bot without a provider should be moved to a usable model: status=%s (%s)", cycle.Status, cycle.Error)
+	}
+	if fresh, err := f.db.GetBot(ctx, store.GetBotParams{ID: orphan.ID, OwnerID: f.account}); err != nil ||
+		fresh.ProviderID == nil || *fresh.ProviderID != f.provider.ID {
+		t.Fatalf("the bot should now use the account's provider: %+v, %v", fresh.ProviderID, err)
+	}
+
+	// With no usable model left at all, a missing provider is permanent.
+	if _, err := f.db.Pool.Exec(ctx, `UPDATE providers SET enabled = false WHERE id = $1`, f.provider.ID); err != nil {
+		t.Fatalf("disable provider: %v", err)
+	}
+	unconfigured := f.direct(f.bot("NothingUsable", false))
+	first := f.send(unconfigured, "你好")
+	f.drain(1)
+	failed = f.cycle(first.Cycle.ID)
+	if failed.Status != "failed" || failed.Attempt != 1 {
+		t.Fatalf("missing provider: status=%s attempt=%d, want failed after 1 attempt", failed.Status, failed.Attempt)
 	}
 }
 

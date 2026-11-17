@@ -101,9 +101,11 @@ type desktopScreenshotTool struct{ *DesktopTools }
 
 func (t *desktopScreenshotTool) Name() string { return "desktop_screenshot" }
 func (t *desktopScreenshotTool) Description() string {
-	return "Look at the desktop. Returns the open windows (active one marked *) and all text on screen with the (x,y) pixel " +
-		"coordinates to click it (OCR), so you can operate the desktop even without seeing images; models that accept images " +
-		"also get the screenshot. Set save=true to keep the PNG in /workspace/artifacts/desktop/ (e.g. to send it to the user with send_file)."
+	return "Look at the desktop. Returns the open windows (active one marked *), the controls programs report (buttons, menus, " +
+		"fields with their exact names, e.g. a calculator's \"+\" key) and all text on screen (OCR), each with the (x,y) pixel " +
+		"point to click, so you can operate the desktop even without seeing images; models that accept images also get the " +
+		"screenshot. Prefer a control's point over OCR text for buttons and menus. " +
+		"Set save=true to keep the PNG in /workspace/artifacts/desktop/ (e.g. to send it to the user with send_file)."
 }
 func (t *desktopScreenshotTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"save":{"type":"boolean","description":"keep the screenshot as a PNG file in the workspace"}}}`)
@@ -119,7 +121,7 @@ func (t *desktopScreenshotTool) Execute(ctx context.Context, raw json.RawMessage
 	}
 	id := uuid.NewString()
 	jpegRel := filepath.ToSlash(filepath.Join(".superbot", "screens", id+".jpg"))
-	opts := screenOptions{Capture: true, OCR: true, Windows: true, Scale: 1.5, JPEG: "/workspace/" + jpegRel}
+	opts := screenOptions{Capture: true, OCR: true, Windows: true, Controls: true, Scale: 1.5, JPEG: "/workspace/" + jpegRel}
 	savedRel := ""
 	if args.Save {
 		savedRel = filepath.ToSlash(filepath.Join("artifacts", "desktop", time.Now().Format("20060102-150405")+"-"+id[:8]+".png"))
@@ -146,9 +148,9 @@ type desktopReadScreenTool struct{ *DesktopTools }
 
 func (t *desktopReadScreenTool) Name() string { return "desktop_read_screen" }
 func (t *desktopReadScreenTool) Description() string {
-	return "Read the text on the desktop with click coordinates (OCR), cheaper than desktop_screenshot. " +
-		"find: return only where this text appears (e.g. a button label) with the exact point to click. " +
-		"region: read only part of the screen (more accurate for small text)."
+	return "Read the desktop's controls (buttons, menus, fields by exact name) and text (OCR) with click coordinates, " +
+		"cheaper than desktop_screenshot. find: return only the control named this (or, failing that, where this text " +
+		"appears) with the exact point to click. region: read only part of the screen (more accurate for small text)."
 }
 func (t *desktopReadScreenTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{` +
@@ -173,7 +175,7 @@ func (t *desktopReadScreenTool) Execute(ctx context.Context, raw json.RawMessage
 	if len([]rune(args.Find)) > 200 {
 		return Result{}, fmt.Errorf("find is too long")
 	}
-	opts := screenOptions{Capture: true, OCR: true, Windows: args.Region == nil, Scale: 1.5}
+	opts := screenOptions{Capture: true, OCR: true, Windows: args.Region == nil, Controls: true, Scale: 1.5}
 	if args.Region != nil {
 		r := args.Region
 		if err := checkPoint(r.X, r.Y); err != nil {
@@ -193,6 +195,9 @@ func (t *desktopReadScreenTool) Execute(ctx context.Context, raw json.RawMessage
 	capture, err := t.screen(ctx, opts)
 	if err != nil {
 		return Result{Content: err.Error(), IsError: true}, nil
+	}
+	if args.Region != nil {
+		capture.Controls = controlsIn(capture.Controls, args.Region.X, args.Region.Y, args.Region.Width, args.Region.Height)
 	}
 	return Result{Content: formatScreen(capture, args.Find, args.Region == nil && args.Find == "")}, nil
 }

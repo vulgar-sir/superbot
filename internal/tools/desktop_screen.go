@@ -18,13 +18,16 @@ var desktopScreenScript string
 
 // screenOptions are passed to desktop_screen.py as JSON.
 type screenOptions struct {
-	Capture bool    `json:"capture"`
-	OCR     bool    `json:"ocr"`
-	Windows bool    `json:"windows"`
-	Region  []int   `json:"region,omitempty"`
-	Scale   float64 `json:"scale,omitempty"`
-	Save    string  `json:"save,omitempty"`
-	JPEG    string  `json:"jpeg,omitempty"`
+	Capture bool `json:"capture"`
+	OCR     bool `json:"ocr"`
+	Windows bool `json:"windows"`
+	// Controls asks for the buttons, menus and fields the programs publish
+	// over the accessibility bus (desktop computers).
+	Controls bool    `json:"controls"`
+	Region   []int   `json:"region,omitempty"`
+	Scale    float64 `json:"scale,omitempty"`
+	Save     string  `json:"save,omitempty"`
+	JPEG     string  `json:"jpeg,omitempty"`
 }
 
 type screenWord struct {
@@ -39,6 +42,21 @@ type screenWord struct {
 	Line  int    `json:"l"`
 }
 
+// screenControl is one button, menu item or field a program publishes
+// over the accessibility bus, with its box in screen coordinates.
+type screenControl struct {
+	Role     string `json:"r"`
+	Name     string `json:"n"`
+	App      string `json:"a"`
+	X        int    `json:"x"`
+	Y        int    `json:"y"`
+	W        int    `json:"w"`
+	H        int    `json:"h"`
+	Disabled bool   `json:"off"`
+}
+
+func (c screenControl) center() (int, int) { return c.X + c.W/2, c.Y + c.H/2 }
+
 type screenWindow struct {
 	ID      string `json:"id"`
 	Desktop int    `json:"desktop"`
@@ -50,13 +68,14 @@ type screenWindow struct {
 }
 
 type screenCapture struct {
-	Width   int            `json:"width"`
-	Height  int            `json:"height"`
-	Mouse   []int          `json:"mouse"`
-	Active  string         `json:"active"`
-	Windows []screenWindow `json:"windows"`
-	Words   []screenWord   `json:"words"`
-	Errors  []string       `json:"errors"`
+	Width    int             `json:"width"`
+	Height   int             `json:"height"`
+	Mouse    []int           `json:"mouse"`
+	Active   string          `json:"active"`
+	Windows  []screenWindow  `json:"windows"`
+	Words    []screenWord    `json:"words"`
+	Controls []screenControl `json:"controls"`
+	Errors   []string        `json:"errors"`
 }
 
 func parseScreenCapture(stdout string) (screenCapture, error) {
@@ -301,8 +320,105 @@ func formatWindows(capture screenCapture) string {
 	return b.String()
 }
 
+// controlRoles shortens the accessibility role names for the model.
+var controlRoles = map[string]string{
+	"push button": "button", "toggle button": "toggle", "check box": "checkbox",
+	"radio button": "radio", "check menu item": "menu item", "radio menu item": "menu item",
+	"combo box": "dropdown", "text": "field", "entry": "field", "password text": "password field",
+	"spin button": "number field", "page tab": "tab", "list item": "item", "tree item": "item",
+	"table cell": "cell", "tool bar button": "button", "split button": "button",
+}
+
+func controlRole(role string) string {
+	if short, ok := controlRoles[role]; ok {
+		return short
+	}
+	return role
+}
+
+// controlsIn keeps the controls whose center lies in the region.
+func controlsIn(controls []screenControl, x, y, w, h int) []screenControl {
+	var out []screenControl
+	for _, c := range controls {
+		cx, cy := c.center()
+		if cx >= x && cx < x+w && cy >= y && cy < y+h {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// findControls returns the controls whose name is the query, or failing
+// that, contains it.
+func findControls(controls []screenControl, query string) []screenControl {
+	needle := normalizeForMatch(query)
+	if needle == "" {
+		return nil
+	}
+	var exact, partial []screenControl
+	for _, c := range controls {
+		name := normalizeForMatch(c.Name)
+		switch {
+		case name == needle:
+			exact = append(exact, c)
+		case strings.Contains(name, needle):
+			partial = append(partial, c)
+		}
+	}
+	if len(exact) > 0 {
+		return exact
+	}
+	return partial
+}
+
+// maxControlsText bounds the control list one tool result carries.
+const maxControlsText = 6000
+
+// formatControls lists controls as "(x,y) [role] name", top to bottom, the
+// controls of one row joined with " · ".
+func formatControls(controls []screenControl, limit int) string {
+	sorted := append([]screenControl(nil), controls...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		_, yi := sorted[i].center()
+		_, yj := sorted[j].center()
+		if abs(yi-yj) > 6 {
+			return yi < yj
+		}
+		xi, _ := sorted[i].center()
+		xj, _ := sorted[j].center()
+		return xi < xj
+	})
+	var b strings.Builder
+	rowY := -1000
+	shown := 0
+	for _, c := range sorted {
+		x, y := c.center()
+		item := fmt.Sprintf("(%d,%d) [%s] %s", x, y, controlRole(c.Role), c.Name)
+		if c.Disabled {
+			item += " (disabled)"
+		}
+		if b.Len()+len(item)+4 > limit {
+			break
+		}
+		if abs(y-rowY) <= 6 && b.Len() > 0 {
+			b.WriteString(" · ")
+		} else {
+			if b.Len() > 0 {
+				b.WriteByte('\n')
+			}
+			rowY = y
+		}
+		b.WriteString(item)
+		shown++
+	}
+	if shown < len(sorted) {
+		fmt.Fprintf(&b, "\n… %d more controls not shown; read a part of the screen with region, or search with find.", len(sorted)-shown)
+	}
+	return b.String()
+}
+
 // formatScreen renders a capture for the model: screen size, mouse, the
-// windows and the text with click coordinates.
+// windows, the programs' controls and the text with click coordinates.
 func formatScreen(capture screenCapture, query string, withWindows bool) string {
 	var b strings.Builder
 	if capture.Width > 0 {
@@ -318,6 +434,11 @@ func formatScreen(capture screenCapture, query string, withWindows bool) string 
 	}
 	segments := segmentWords(capture.Words)
 	if strings.TrimSpace(query) != "" {
+		if found := findControls(capture.Controls, query); len(found) > 0 {
+			fmt.Fprintf(&b, "\nControl %q found %d time(s) (click its point):\n", query, len(found))
+			b.WriteString(formatControls(found, maxControlsText))
+			return strings.TrimSpace(b.String())
+		}
 		matches := findText(segments, query)
 		if len(matches) == 0 {
 			fmt.Fprintf(&b, "\nText %q was not found on the screen.", query)
@@ -330,6 +451,11 @@ func formatScreen(capture screenCapture, query string, withWindows bool) string 
 		fmt.Fprintf(&b, "\nFound %q %d time(s):\n", query, len(matches))
 		b.WriteString(formatScreenText(matches, maxScreenText))
 		return strings.TrimSpace(b.String())
+	}
+	if len(capture.Controls) > 0 {
+		b.WriteString("\nControls the programs report (exact names; prefer these points for buttons and menus):\n")
+		b.WriteString(formatControls(capture.Controls, maxControlsText))
+		b.WriteString("\n")
 	}
 	b.WriteString("\nText on screen:\n")
 	if len(segments) == 0 {
