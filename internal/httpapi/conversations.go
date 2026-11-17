@@ -466,8 +466,14 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	for _, inv := range invocations {
 		toolsOut = append(toolsOut, toToolInvocationDTO(inv))
 	}
+	// ?events=tool_result keeps only the tool results: the transcript needs
+	// them for the tool cards, not the run's thousands of text deltas.
+	only := r.URL.Query().Get("events")
 	eventsOut := make([]eventDTO, 0, len(eventsList))
 	for _, ev := range eventsList {
+		if only != "" && ev.Type != only {
+			continue
+		}
 		eventsOut = append(eventsOut, toEventDTO(ev))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

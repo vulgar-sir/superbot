@@ -6,14 +6,15 @@ import (
 
 	"superbot/internal/llm"
 	"superbot/internal/store"
+	"superbot/internal/tools"
 )
 
 // defaultAskTokens name the tool families that need a decision unless a user
-// rule allows them. Browser/computer automation runs inside the bot's
-// isolated computer and is part of normal tool use, so it is not listed.
+// rule allows them: only what can do serious harm outside the bot's own
+// computer. Shell, Python, file writes and browser/desktop automation run in
+// the bot's isolated computer and are ordinary work, so they are not listed.
 var defaultAskTokens = []string{
-	"shell", "python", "local_exec", "vault", "credential", "delete", "write",
-	"terminal", "connector_add", "connector_remove",
+	"local_exec", "vault", "credential", "delete", "connector_add", "connector_remove",
 }
 
 // commandTools take a free-form command whose text the model controls.
@@ -26,8 +27,22 @@ var commandArgKeys = []string{"command", "cmd", "code", "script"}
 var shellChaining = []string{";", "&&", "||", "|", "`", "$(", "\n", "\r", ">", "<", "&"}
 
 func approvalRequired(autoReview bool, rules []store.PermissionRule, call llm.ToolCall) bool {
+	need, _ := approvalNeed(autoReview, rules, call)
+	return need
+}
+
+// approvalNeed says whether a call must be decided before it runs, and
+// whether the account's primary bot may decide it for the user. Only the
+// default list is delegated: auto-review switched off and the user's own
+// "always ask" rules mean the user wants to decide personally.
+func approvalNeed(autoReview bool, rules []store.PermissionRule, call llm.ToolCall) (need, delegable bool) {
+	if call.Name == tools.PermissionRulesToolName {
+		// Standing exemptions are the user's to grant: no rule, setting or
+		// other bot decides them.
+		return true, false
+	}
 	if !autoReview {
-		return true
+		return true, false
 	}
 	lowerName := strings.ToLower(call.Name)
 	text := lowerName + " " + strings.ToLower(string(call.Arguments))
@@ -41,7 +56,7 @@ func approvalRequired(autoReview bool, rules []store.PermissionRule, call llm.To
 		case "always_ask":
 			// Asking too often is safe, so this stays a loose substring match.
 			if strings.Contains(text, pattern) {
-				return true
+				return true, false
 			}
 		case "allow":
 			if allowRuleMatches(pattern, lowerName, call.Arguments) {
@@ -50,14 +65,14 @@ func approvalRequired(autoReview bool, rules []store.PermissionRule, call llm.To
 		}
 	}
 	if allowMatched {
-		return false
+		return false, false
 	}
 	for _, token := range defaultAskTokens {
 		if strings.Contains(lowerName, token) {
-			return true
+			return true, true
 		}
 	}
-	return false
+	return false, false
 }
 
 // allowRuleMatches is deliberately strict. The model writes the arguments, so

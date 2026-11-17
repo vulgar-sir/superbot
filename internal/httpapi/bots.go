@@ -48,6 +48,7 @@ func (s *Server) botRoutes(r chi.Router) {
 		r.Post("/memories/tidy", s.handleTidyBotMemories)
 		r.Post("/memories/{memoryID}/pin", s.handlePinBotMemory)
 		r.Post("/memories/{memoryID}/restore", s.handleRestoreBotMemory)
+		r.Post("/memories/{memoryID}/archive", s.handleArchiveBotMemory)
 		r.Put("/memories/{memoryID}", s.handleUpdateBotMemory)
 		r.Delete("/memories/{memoryID}", s.handleDeleteBotMemory)
 		r.Patch("/proactivity", s.handleSetBotProactivity)

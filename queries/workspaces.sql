@@ -56,6 +56,18 @@ WHERE w.bot_id = b.id
   AND w.status = 'running'
   AND COALESCE(w.last_used_at, b.last_activity_at, b.updated_at) < now() - sqlc.arg(idle)::text::interval;
 
+-- name: ListIdleRunningWorkspaces :many
+-- The running computers StopIdleWorkspaces would put to sleep now.
+SELECT w.bot_id, w.owner_id
+FROM workspaces w
+JOIN bots b ON b.id = w.bot_id
+WHERE w.desired_state = 'running'
+  AND w.status = 'running'
+  AND COALESCE(w.last_used_at, b.last_activity_at, b.updated_at) < now() - sqlc.arg(idle)::text::interval;
+
+-- name: TouchWorkspaceUsed :exec
+UPDATE workspaces SET last_used_at = now() WHERE bot_id = $1;
+
 -- name: CreateComputerSnapshot :one
 INSERT INTO computer_snapshots (account_id, bot_id, label, archive_path, size_bytes)
 VALUES ($1, $2, $3, $4, $5)

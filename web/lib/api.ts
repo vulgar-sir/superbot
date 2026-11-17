@@ -27,6 +27,7 @@ import type {
   GoalResponse,
   SideChat,
   Memory,
+  MemoryCreateResult,
   MemoryImportResult,
   MemoryTidyReport,
   UsageData,
@@ -279,11 +280,19 @@ export const api = {
     });
   },
   // `duplicate` is true when the content matched an existing memory, which
-  // was refreshed instead of saving a second copy.
-  createUserMemory(content: string) {
-    return request<{ memory: Memory; duplicate?: boolean }>("/api/memories", {
+  // was refreshed instead of saving a second copy; `related` lists similar
+  // memories the user may want to retire.
+  createUserMemory(content: string, supersedes: string[] = []) {
+    return request<MemoryCreateResult>("/api/memories", {
       method: "POST",
-      body: jsonBody({ content }),
+      body: jsonBody({ content, supersedes }),
+    });
+  },
+  // Archives a memory; `supersededBy` records the newer memory replacing it.
+  archiveUserMemory(memoryId: string, supersededBy?: string) {
+    return request<{ memory: Memory }>(`/api/memories/${memoryId}/archive`, {
+      method: "POST",
+      body: jsonBody(supersededBy ? { superseded_by: supersededBy } : {}),
     });
   },
   updateUserMemory(memoryId: string, content: string) {
@@ -726,6 +735,54 @@ export const api = {
     return request<MemoryImportResult>(`/api/bots/${botId}/memories/import`, {
       method: "POST",
       body: jsonBody({ content }),
+    });
+  },
+  archiveBotMemory(botId: string, memoryId: string, supersededBy?: string) {
+    return request<{ memory: Memory }>(`/api/bots/${botId}/memories/${memoryId}/archive`, {
+      method: "POST",
+      body: jsonBody(supersededBy ? { superseded_by: supersededBy } : {}),
+    });
+  },
+  // Team (group) memories: shared by everyone in the group.
+  listTeamMemories(teamId: string, includeArchived = false) {
+    return request<{ memories: Memory[] }>(
+      `/api/teams/${teamId}/memories${includeArchived ? "?include_archived=1" : ""}`,
+    );
+  },
+  createTeamMemory(teamId: string, content: string, supersedes: string[] = []) {
+    return request<MemoryCreateResult>(`/api/teams/${teamId}/memories`, {
+      method: "POST",
+      body: jsonBody({ content, supersedes }),
+    });
+  },
+  updateTeamMemory(teamId: string, memoryId: string, content: string) {
+    return request<{ memory: Memory }>(`/api/teams/${teamId}/memories/${memoryId}`, {
+      method: "PUT",
+      body: jsonBody({ content }),
+    });
+  },
+  deleteTeamMemory(teamId: string, memoryId: string) {
+    return request<void>(`/api/teams/${teamId}/memories/${memoryId}`, {
+      method: "DELETE",
+      body: jsonBody({}),
+    });
+  },
+  pinTeamMemory(teamId: string, memoryId: string, pinned: boolean) {
+    return request<{ memory: Memory }>(`/api/teams/${teamId}/memories/${memoryId}/pin`, {
+      method: "POST",
+      body: jsonBody({ pinned }),
+    });
+  },
+  restoreTeamMemory(teamId: string, memoryId: string) {
+    return request<{ memory: Memory }>(`/api/teams/${teamId}/memories/${memoryId}/restore`, {
+      method: "POST",
+      body: jsonBody({}),
+    });
+  },
+  archiveTeamMemory(teamId: string, memoryId: string, supersededBy?: string) {
+    return request<{ memory: Memory }>(`/api/teams/${teamId}/memories/${memoryId}/archive`, {
+      method: "POST",
+      body: jsonBody(supersededBy ? { superseded_by: supersededBy } : {}),
     });
   },
   listBotACL(botId: string) {
@@ -1533,12 +1590,15 @@ export const api = {
       }>;
     }>(`/api/search?q=${encodeURIComponent(query)}`);
   },
-  getRun(id: string) {
+  // `onlyEvents` keeps one event type (e.g. "tool_result") instead of every
+  // text delta of the run.
+  getRun(id: string, onlyEvents?: string) {
+    const query = onlyEvents ? `?events=${encodeURIComponent(onlyEvents)}` : "";
     return request<{
       run: Run;
       tool_invocations: ToolInvocation[];
       events: EventEnvelope[];
-    }>(`/api/runs/${id}`);
+    }>(`/api/runs/${id}${query}`);
   },
 };
 

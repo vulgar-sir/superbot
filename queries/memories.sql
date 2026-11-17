@@ -43,6 +43,11 @@ WHERE owner_id = $1
 ORDER BY embedding <=> sqlc.arg(embedding)::text::vector
 LIMIT sqlc.arg(max_results);
 
+-- Ordered by the computed similarity on purpose: an ORDER BY on the bare
+-- distance lets the planner pick the table-wide HNSW index, which returns the
+-- nearest rows of every account and filters by scope afterwards, so a small
+-- scope in a large table silently loses hits. Scopes are small enough for an
+-- exact scan over the scope index.
 -- name: SearchMemoriesScored :many
 SELECT sqlc.embed(memories),
        (1 - (memories.embedding <=> sqlc.arg(embedding)::text::vector))::float8 AS similarity
@@ -54,7 +59,7 @@ WHERE memories.owner_id = $1
   AND memories.embedding IS NOT NULL
   AND memories.embedding_model = sqlc.arg(embedding_model)
   AND (1 - (memories.embedding <=> sqlc.arg(embedding)::text::vector)) >= sqlc.arg(min_similarity)::float8
-ORDER BY memories.embedding <=> sqlc.arg(embedding)::text::vector
+ORDER BY similarity DESC, memories.updated_at DESC
 LIMIT sqlc.arg(max_results);
 
 -- name: ListMemories :many
@@ -74,51 +79,57 @@ LIMIT $4;
 DELETE FROM memories
 WHERE id = $1 AND owner_id = $2;
 
--- name: UpdateBotMemory :one
+-- The vector of the old text goes with it; the caller stores the new one, or
+-- the background re-embed does when the embedding service is unavailable.
+-- name: UpdateScopedMemory :one
 UPDATE memories
 SET content = sqlc.arg(content),
+    embedding = NULL,
     updated_at = now()
 WHERE id = sqlc.arg(id)
   AND owner_id = sqlc.arg(owner_id)
-  AND scope_type = 'bot'
+  AND scope_type = sqlc.arg(scope_type)
   AND scope_id = sqlc.arg(scope_id)
 RETURNING *;
 
--- name: DeleteBotMemory :execrows
+-- name: DeleteScopedMemory :execrows
 DELETE FROM memories
 WHERE id = sqlc.arg(id)
   AND owner_id = sqlc.arg(owner_id)
-  AND scope_type = 'bot'
+  AND scope_type = sqlc.arg(scope_type)
   AND scope_id = sqlc.arg(scope_id);
 
 -- Archived rows are included on purpose: a restored memory must already live
--- in the current vector space or recall would never find it.
+-- in the current vector space or recall would never find it. Active rows
+-- come first and the newest of them first, because those are the ones recall
+-- is missing right now; exclude_ids skips rows that failed in this process.
 -- name: ListMemoriesNeedingReembed :many
 SELECT * FROM memories
-WHERE embedding IS NULL OR embedding_model <> sqlc.arg(embedding_model)
-ORDER BY created_at
+WHERE (embedding IS NULL OR embedding_model <> sqlc.arg(embedding_model))
+  AND NOT (id = ANY(sqlc.arg(exclude_ids)::uuid[]))
+ORDER BY (archived_at IS NOT NULL), updated_at DESC
 LIMIT sqlc.arg(max_rows);
 
--- name: UpdateUserMemory :one
-UPDATE memories
-SET content = sqlc.arg(content),
-    updated_at = now()
-WHERE id = sqlc.arg(id)
-  AND owner_id = sqlc.arg(owner_id)
-  AND scope_type = 'user'
-  AND scope_id = sqlc.arg(scope_id)
-RETURNING *;
+-- name: CountMemoriesNeedingReembed :one
+SELECT count(*)::bigint
+FROM memories
+WHERE embedding IS NULL OR embedding_model <> sqlc.arg(embedding_model);
 
--- name: DeleteUserMemory :execrows
-DELETE FROM memories
+-- Writes a vector only if the text it was computed from is still the
+-- memory's text, so a background re-embed cannot overwrite the vector of an
+-- edit that happened while the embedding call was in flight.
+-- name: SetMemoryEmbeddingForContent :execrows
+UPDATE memories
+SET embedding = sqlc.arg(embedding)::text::vector,
+    embedding_model = sqlc.arg(embedding_model)
 WHERE id = sqlc.arg(id)
   AND owner_id = sqlc.arg(owner_id)
-  AND scope_type = 'user'
-  AND scope_id = sqlc.arg(scope_id);
+  AND content = sqlc.arg(content);
 
 -- name: RefreshMemory :one
 UPDATE memories
 SET content = sqlc.arg(content),
+    embedding = CASE WHEN content = sqlc.arg(content) THEN embedding END,
     pinned = pinned OR sqlc.arg(pinned)::boolean,
     updated_at = now()
 WHERE id = sqlc.arg(id) AND owner_id = sqlc.arg(owner_id)
@@ -149,9 +160,34 @@ RETURNING id;
 -- name: RestoreMemory :one
 UPDATE memories
 SET archived_at = NULL,
+    metadata = metadata - 'superseded_by' - 'superseded_reason',
     updated_at = now()
 WHERE id = sqlc.arg(id) AND owner_id = sqlc.arg(owner_id)
 RETURNING *;
+
+-- Archives a memory a newer one replaced. Pinned rows are left alone unless
+-- allow_pinned is set: only the user retires what the user pinned.
+-- name: SupersedeMemory :one
+UPDATE memories
+SET archived_at = now(),
+    updated_at = now(),
+    metadata = metadata || jsonb_build_object(
+        'superseded_by', sqlc.arg(superseded_by)::text,
+        'superseded_reason', sqlc.arg(reason)::text)
+WHERE id = sqlc.arg(id)
+  AND owner_id = sqlc.arg(owner_id)
+  AND scope_type = sqlc.arg(scope_type)
+  AND scope_id = sqlc.arg(scope_id)
+  AND archived_at IS NULL
+  AND (pinned = false OR sqlc.arg(allow_pinned)::boolean)
+RETURNING *;
+
+-- name: ListRecentMemories :many
+SELECT * FROM memories
+WHERE owner_id = $1 AND scope_type = $2 AND scope_id = $3
+  AND archived_at IS NULL
+ORDER BY pinned DESC, updated_at DESC
+LIMIT $4;
 
 -- name: ListMemoryScopesForTidy :many
 SELECT owner_id, scope_type, scope_id, count(*)::bigint AS row_count
@@ -221,16 +257,29 @@ SET bot_id = EXCLUDED.bot_id,
 WHERE memory_review_cursors.last_reviewed_at IS NULL
    OR memory_review_cursors.last_reviewed_at < now() - sqlc.arg(idle_seconds)::float8 * interval '1 second';
 
+-- Oldest first, so the reviewer can walk the whole unreviewed range in
+-- windows. sender_user_id comes from the message metadata the chat service
+-- stamps; the CASE keeps a malformed value from failing the cast.
 -- name: ListMessagesForMemoryReview :many
-SELECT m.ordinal, m.sender_type, m.content, COALESCE(b.name, '')::text AS bot_name
+SELECT m.ordinal,
+       m.sender_type,
+       m.content,
+       COALESCE(b.name, '')::text AS bot_name,
+       u.id AS sender_user_id,
+       COALESCE(u.display_name, '')::text AS sender_user_name
 FROM messages m
 LEFT JOIN bots b ON b.id = m.sender_bot_id
+LEFT JOIN users u ON m.sender_type = 'user'
+    AND u.id = CASE
+        WHEN m.metadata->>'sender_user_id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        THEN (m.metadata->>'sender_user_id')::uuid
+    END
 WHERE m.conversation_id = sqlc.arg(conversation_id)
   AND m.ordinal > sqlc.arg(after_ordinal)
   AND m.deleted_at IS NULL
   AND m.sender_type IN ('user', 'bot')
   AND btrim(m.content) <> ''
-ORDER BY m.ordinal DESC
+ORDER BY m.ordinal
 LIMIT sqlc.arg(max_rows);
 
 -- name: AdvanceMemoryReviewCursor :exec

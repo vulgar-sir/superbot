@@ -1,0 +1,19 @@
+# Re-applies the bot-computer firewall (deploy/sandbox-firewall.sh) at boot,
+# once Docker and the sandbox network are up. Install:
+#   cp deploy/systemd/superbot-sandbox-firewall.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now superbot-sandbox-firewall
+# Adjust the path below if the checkout is not at /srv/superbot.
+[Unit]
+Description=Superbot bot-computer egress firewall
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# The sandbox network exists only once the stack has started; retry briefly.
+ExecStart=/bin/sh -c 'for i in $(seq 1 30); do /bin/bash /srv/superbot/deploy/sandbox-firewall.sh apply && exit 0; sleep 5; done; exit 1'
+ExecStop=/bin/bash /srv/superbot/deploy/sandbox-firewall.sh remove
+
+[Install]
+WantedBy=multi-user.target

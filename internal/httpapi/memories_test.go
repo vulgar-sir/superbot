@@ -46,26 +46,51 @@ func TestMemoryDTOShape(t *testing.T) {
 	}
 }
 
+func TestMemoryDTOSupersededBy(t *testing.T) {
+	archived := time.Now()
+	newer := uuid.New()
+	dto := toMemoryDTO(store.Memory{
+		ArchivedAt: &archived,
+		Metadata:   json.RawMessage(`{"superseded_by":"` + newer.String() + `","superseded_reason":"tool"}`),
+	})
+	if dto.SupersededBy == nil || *dto.SupersededBy != newer {
+		t.Fatalf("superseded_by = %v, want %v", dto.SupersededBy, newer)
+	}
+	// An active memory is never shown as replaced, whatever its metadata says.
+	active := toMemoryDTO(store.Memory{Metadata: json.RawMessage(`{"superseded_by":"` + newer.String() + `"}`)})
+	if active.SupersededBy != nil {
+		t.Fatal("an active memory must not report superseded_by")
+	}
+	if broken := toMemoryDTO(store.Memory{ArchivedAt: &archived, Metadata: json.RawMessage(`{"superseded_by":"x"}`)}); broken.SupersededBy != nil {
+		t.Fatal("a malformed superseded_by must be ignored")
+	}
+}
+
 func TestWriteMemoryError(t *testing.T) {
 	cases := []struct {
-		err  error
-		code string
+		err    error
+		status int
+		code   string
 	}{
-		{memory.ErrSecretContent, "secret_rejected"},
-		{errors.New("content is required"), "invalid_request"},
+		{memory.ErrSecretContent, http.StatusBadRequest, "secret_rejected"},
+		{errors.New("content is required"), http.StatusBadRequest, "invalid_request"},
+		{memory.ErrNotFound, http.StatusNotFound, "not_found"},
 	}
 	for _, tc := range cases {
 		recorder := httptest.NewRecorder()
 		writeMemoryError(recorder, tc.err)
-		if recorder.Code != http.StatusBadRequest {
-			t.Fatalf("status = %d", recorder.Code)
+		if recorder.Code != tc.status {
+			t.Fatalf("status = %d, want %d", recorder.Code, tc.status)
 		}
 		var body errorBody
 		if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
 			t.Fatal(err)
 		}
-		if body.Error.Code != tc.code || body.Error.Message != tc.err.Error() {
+		if body.Error.Code != tc.code {
 			t.Fatalf("body = %+v, want code %q", body, tc.code)
+		}
+		if tc.status == http.StatusBadRequest && body.Error.Message != tc.err.Error() {
+			t.Fatalf("message = %q", body.Error.Message)
 		}
 	}
 }

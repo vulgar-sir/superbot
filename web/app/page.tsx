@@ -45,6 +45,7 @@ import { RoutineDialog } from "@/components/RoutineDialog";
 import { AgentThreadPanel } from "@/components/AgentThreadPanel";
 import { AgentThreadGroup } from "@/components/AgentThreadGroup";
 import { buildTranscript, itemMessage } from "@/lib/agentThreads";
+import { orderForDisplay, replyRunIDs, replySeenOrdinal, unreadByReply } from "@/lib/displayOrder";
 import { SearchDialog } from "@/components/SearchDialog";
 import { VoiceCallPanel } from "@/components/VoiceCallPanel";
 import { ChatMessage } from "@/components/ChatMessage";
@@ -185,6 +186,24 @@ function groupPosition(messages: Message[], index: number): "first" | "middle" |
   return "single";
 }
 
+// The primary bot's request for standing exemptions, read from the approval
+// arguments; null for any other approval.
+function ruleRequest(
+  approval: ToolApproval,
+): { summary: string; rules: Array<{ pattern: string; reason: string }> } | null {
+  if (approval.tool_name !== "request_permission_rules") return null;
+  const args = (approval.args ?? {}) as { summary?: unknown; rules?: unknown };
+  const rules = Array.isArray(args.rules)
+    ? args.rules
+        .map((rule) => {
+          const item = (rule ?? {}) as { pattern?: unknown; reason?: unknown };
+          return { pattern: String(item.pattern ?? "").trim(), reason: String(item.reason ?? "").trim() };
+        })
+        .filter((rule) => rule.pattern)
+    : [];
+  return { summary: typeof args.summary === "string" ? args.summary : "", rules };
+}
+
 function isToolApprovalNotice(message: Message): boolean {
   if (message.sender_type !== "system") return false;
   if (!message.metadata || typeof message.metadata.approval_id !== "string") return false;
@@ -197,6 +216,9 @@ type InterjectionState = "pending" | "delivered" | "follow_up";
 type CycleRetry = { attempt: number; maxAttempts: number; error: string };
 
 const INTERJECTION_FADE_MS = 4000;
+
+// How many of the latest replies get their tool cards loaded on open.
+const RECENT_TOOL_REPLIES = 8;
 
 export default function HomePage() {
   const router = useRouter();
@@ -213,13 +235,20 @@ export default function HomePage() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
-  const visibleMessages = useMemo(() => messages.filter((message) => !isToolApprovalNotice(message)), [messages]);
+  // Replies sit before the messages that reached the bot too late for them.
+  const visibleMessages = useMemo(
+    () => orderForDisplay(messages.filter((message) => !isToolApprovalNotice(message))),
+    [messages],
+  );
   // Bot-to-bot private messages fold into one summary per exchange.
   const transcript = useMemo(() => buildTranscript(visibleMessages), [visibleMessages]);
   const transcriptAnchors = useMemo(() => transcript.map((item) => itemMessage(item)), [transcript]);
   const [streams, setStreams] = useState<Record<string, StreamState>>({});
   const [tools, setTools] = useState<Record<string, ToolActivity[]>>({});
   const [runStatus, setRunStatus] = useState<Record<string, string>>({});
+  // For a run that resumed a reply after a tool approval: the paused runs
+  // before it, whose tool calls belong to the same reply.
+  const [runChains, setRunChains] = useState<Record<string, string[]>>({});
   const [cycleActive, setCycleActive] = useState(false);
   const [live, setLive] = useState(false);
   const [input, setInput] = useState("");
@@ -293,6 +322,14 @@ export default function HomePage() {
   // Message ids the server reported as delivered to a working bot. The SSE
   // event can beat the send response, so remember them for sendContent.
   const deliveredInterjectionsRef = useRef<Set<string>>(new Set());
+  // How far each run had read, from its status events; a stream that starts
+  // after the event picks it up from here.
+  const runSeenRef = useRef<Record<string, number>>({});
+  const runBotRef = useRef<Record<string, string>>({});
+  const messagesRef = useRef<Message[]>([]);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   // Let "delivered" notes disappear after a moment.
   const fadeDeliveredInterjections = useCallback((ids: string[]) => {
@@ -310,6 +347,32 @@ export default function HomePage() {
       });
     }, INTERJECTION_FADE_MS);
   }, []);
+
+  // A reply that had read an interjection has taken it in, whether it reached
+  // the bot mid-turn or was already there when the bot's turn began (the next
+  // member of a group, a follow-up cycle).
+  const markInterjectionsRead = useCallback(
+    (seen: number) => {
+      const read = messagesRef.current
+        .filter((item) => item.sender_type === "user" && !item.id.startsWith("pending-") && item.ordinal <= seen)
+        .map((item) => item.id);
+      if (read.length === 0) return;
+      const readSet = new Set(read);
+      setInterjections((prev) => {
+        const next = { ...prev };
+        let changed = false;
+        for (const [id, state] of Object.entries(prev)) {
+          if (state !== "delivered" && readSet.has(id)) {
+            next[id] = "delivered";
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+      fadeDeliveredInterjections(read.slice(-20));
+    },
+    [fadeDeliveredInterjections],
+  );
 
   const closeSSE = useCallback(() => {
     esRef.current?.close();
@@ -426,13 +489,18 @@ export default function HomePage() {
           if (message.sender_type === "bot") setCycleRetry(null);
           if (message.sender_type === "bot" && message.run_id) {
             const runId = message.run_id;
+            // The reply replaces its live stream, and those of the runs that
+            // paused for approval on the way to it.
+            const finished = replyRunIDs(message);
             setStreams((prev) => {
-              if (!prev[runId]) return prev;
+              if (!finished.some((id) => prev[id])) return prev;
               const next = { ...prev };
-              delete next[runId];
+              for (const id of finished) delete next[id];
               return next;
             });
             setRunStatus((prev) => ({ ...prev, [runId]: "succeeded" }));
+            const seen = replySeenOrdinal(message);
+            if (seen > 0) markInterjectionsRead(seen);
           }
           return;
         }
@@ -448,6 +516,7 @@ export default function HomePage() {
                 botId: String(payload.bot_id ?? ""),
                 text: (current?.text ?? "") + String(payload.text ?? ""),
                 reasoning: current?.reasoning ?? "",
+                seen: current?.seen ?? runSeenRef.current[runId] ?? Number.MAX_SAFE_INTEGER,
               },
             };
           });
@@ -466,6 +535,7 @@ export default function HomePage() {
                 botId: String(payload.bot_id ?? ""),
                 text: current?.text ?? "",
                 reasoning: (current?.reasoning ?? "") + String(payload.text ?? ""),
+                seen: current?.seen ?? runSeenRef.current[runId] ?? Number.MAX_SAFE_INTEGER,
               },
             };
           });
@@ -487,6 +557,23 @@ export default function HomePage() {
             };
             return { ...prev, [runId]: [...list, activity] };
           });
+          // A reply that opens with a tool call still gets its place (and its
+          // typing dots) under the tool card right away.
+          setStreams((prev) =>
+            prev[runId]
+              ? prev
+              : {
+                  ...prev,
+                  [runId]: {
+                    runId,
+                    botId: runBotRef.current[runId] ?? "",
+                    text: "",
+                    reasoning: "",
+                    seen: runSeenRef.current[runId] ?? Number.MAX_SAFE_INTEGER,
+                  },
+                },
+          );
+          setCycleActive(true);
           return;
         }
         case "tool_approval": {
@@ -497,7 +584,10 @@ export default function HomePage() {
             conversation_id: String(payload.conversation_id ?? ""),
             run_id: String(payload.run_id ?? ""),
             call_id: String(payload.call_id ?? ""),
-            tool_name: String(payload.tool_name ?? "tool"),
+            // The event names the tool "name"; reading only tool_name showed
+            // every request as "tool" and saved "always allow" as a rule
+            // for a tool that does not exist.
+            tool_name: String(payload.tool_name ?? payload.name ?? "tool"),
             args: (payload.arguments ?? {}) as Record<string, unknown>,
             status: String(payload.status ?? "pending"),
             created_at: String(payload.created_at ?? new Date().toISOString()),
@@ -505,6 +595,10 @@ export default function HomePage() {
           setApprovals((prev) =>
             prev.some((item) => item.id === approval.id) ? prev : [...prev, approval],
           );
+          // The run stops here; its text stays, without the typing caret.
+          if (approval.run_id) {
+            setRunStatus((prev) => ({ ...prev, [approval.run_id]: "waiting_approval" }));
+          }
           return;
         }
         case "tool_result": {
@@ -534,6 +628,30 @@ export default function HomePage() {
           const runId = String(payload.run_id ?? "");
           const status = String(payload.status ?? "");
           if (runId) setRunStatus((prev) => ({ ...prev, [runId]: status }));
+          if (runId && payload.bot_id) runBotRef.current[runId] = String(payload.bot_id);
+          const seenOrdinal = Number(payload.seen_ordinal ?? 0);
+          if (runId && Number.isFinite(seenOrdinal) && seenOrdinal > 0) {
+            runSeenRef.current[runId] = Math.max(runSeenRef.current[runId] ?? 0, seenOrdinal);
+            setStreams((prev) => {
+              const current = prev[runId];
+              if (!current || current.seen === seenOrdinal) return prev;
+              return { ...prev, [runId]: { ...current, seen: seenOrdinal } };
+            });
+          }
+          const resumedFrom = Array.isArray(payload.resumed_from)
+            ? payload.resumed_from.map((id) => String(id)).filter(Boolean)
+            : [];
+          if (runId && resumedFrom.length > 0) {
+            // This run carries on the paused runs' reply and streams their
+            // text first; their own streams would only repeat it.
+            setRunChains((prev) => ({ ...prev, [runId]: resumedFrom }));
+            setStreams((prev) => {
+              if (!resumedFrom.some((id) => prev[id])) return prev;
+              const next = { ...prev };
+              for (const id of resumedFrom) delete next[id];
+              return next;
+            });
+          }
           const delivered = Array.isArray(payload.interjection_delivered)
             ? payload.interjection_delivered.map((id) => String(id))
             : [];
@@ -623,6 +741,11 @@ export default function HomePage() {
             setCycleActive(false);
             setCycleRetry(null);
           }
+          if (status === "done") {
+            // Every reply of the cycle is stored by now; a stream still
+            // around belongs to a run that never finished one.
+            setStreams({});
+          }
           if (status === "failed" || status === "canceled") {
             // Nothing will deliver these any more.
             setInterjections((prev) => {
@@ -661,7 +784,7 @@ export default function HomePage() {
         }
       }
     },
-    [refreshActive, fadeDeliveredInterjections, applyGoalEvent, reloadGoal],
+    [refreshActive, fadeDeliveredInterjections, markInterjectionsRead, applyGoalEvent, reloadGoal],
   );
 
   const connectSSE = useCallback(
@@ -714,14 +837,27 @@ export default function HomePage() {
           .catch(() => undefined);
         stickRef.current = true;
         window.setTimeout(() => scrollToBottom("auto"), 30);
-        const lastBot = [...data.messages]
-          .reverse()
-          .find((message) => message.sender_type === "bot" && message.run_id);
-        if (lastBot?.run_id) {
-          const runId = lastBot.run_id;
+        // Tool cards sit above the reply they led to; load them for the
+        // latest replies (and the runs that paused for approval before them).
+        const recentRuns = data.messages
+          .filter((message) => message.sender_type === "bot" && message.run_id)
+          .slice(-RECENT_TOOL_REPLIES)
+          .flatMap((message) => replyRunIDs(message));
+        setRunChains(
+          Object.fromEntries(
+            data.messages
+              .filter((message) => message.sender_type === "bot" && message.run_id)
+              .map((message) => [message.run_id as string, replyRunIDs(message).slice(0, -1)])
+              .filter(([, chain]) => chain.length > 0),
+          ),
+        );
+        runSeenRef.current = {};
+        runBotRef.current = {};
+        for (const runId of recentRuns) {
           void api
-            .getRun(runId)
+            .getRun(runId, "tool_result")
             .then((runData) => {
+              if (activeIdRef.current !== id) return;
               const results = new Map<string, { content: string; isError: boolean; widgetHtml?: string }>();
               for (const event of runData.events) {
                 if (event.type === "tool_result") {
@@ -1002,8 +1138,26 @@ export default function HomePage() {
     [messages],
   );
   const currentStream = useMemo(() => Object.values(streams).at(-1), [streams]);
-  const currentRunId = currentStream?.runId ?? lastBotMessage?.run_id ?? null;
-  const currentStatus = currentRunId ? runStatus[currentRunId] : undefined;
+  // Where each reply still being written goes: after everything its bot had
+  // read, so a message sent meanwhile shows below the reply, not between the
+  // question and the answer.
+  const streamSlots = useMemo(() => {
+    const slots = new Map<number, StreamState[]>();
+    for (const stream of Object.values(streams)) {
+      let at = transcript.length;
+      while (at > 0) {
+        const item = transcript[at - 1];
+        if (item.kind !== "message" || !unreadByReply(item.message, stream.seen)) break;
+        at -= 1;
+      }
+      slots.set(at, [...(slots.get(at) ?? []), stream]);
+    }
+    return slots;
+  }, [streams, transcript]);
+  const toolsOfRuns = useCallback(
+    (runIds: string[]) => runIds.flatMap((runId) => tools[runId] ?? []),
+    [tools],
+  );
   const identityName = activeTeam?.name ?? activeBot?.name ?? conversation?.title ?? "superbot";
   const primaryBot = useMemo(
     () => bots.find((bot) => bot.id === user?.primary_bot_id),
@@ -1527,6 +1681,35 @@ export default function HomePage() {
   const isEmptyAccount = bots.length === 0;
   const lastBotMessageID = lastBotMessage?.id;
 
+  // The replies still being written that go before transcript item `at`
+  // (or after the last one), each under the tool calls it has made so far.
+  const renderStreams = (at: number) => {
+    const list = streamSlots.get(at);
+    if (!list) return null;
+    const prev = transcript[at - 1];
+    const now = new Date().toISOString();
+    const showDate = !prev || dateKey(itemMessage(prev).created_at) !== dateKey(now);
+    return list.map((stream, index) => {
+      const streamTools = toolsOfRuns([...(runChains[stream.runId] ?? []), stream.runId]);
+      return (
+        <Fragment key={`stream-${stream.runId}`}>
+          {showDate && index === 0 && <div className="sb-date-sep">{dateLabel(now)}</div>}
+          {streamTools.length > 0 && (
+            <div className="mb-2 space-y-1.5">
+              <ToolGroup tools={streamTools} />
+            </div>
+          )}
+          <StreamingMessage
+            stream={stream}
+            bot={bots.find((bot) => bot.id === stream.botId) ?? activeBot}
+            status={runStatus[stream.runId]}
+            showSender={Boolean(activeTeam)}
+          />
+        </Fragment>
+      );
+    });
+  };
+
   return (
     <div className="sb-shell">
       <GrokSidebar
@@ -1758,9 +1941,11 @@ export default function HomePage() {
                   const prevItem = transcript[index - 1];
                   const first = itemMessage(item, "first");
                   const showDate = !prevItem || dateKey(itemMessage(prevItem).created_at) !== dateKey(first.created_at);
+                  const streamsHere = renderStreams(index);
                   if (item.kind === "agents") {
                     return (
                       <Fragment key={item.key}>
+                        {streamsHere}
                         {showDate && <div className="sb-date-sep">{dateLabel(first.created_at)}</div>}
                         <AgentThreadGroup
                           threads={item.threads}
@@ -1776,9 +1961,17 @@ export default function HomePage() {
                   const position = groupPosition(transcriptAnchors, index);
                   const senderVisible =
                     isTeam && message.sender_type === "bot" && (position === "first" || position === "single");
+                  // The tool calls a reply made sit right above it.
+                  const replyTools = message.sender_type === "bot" ? toolsOfRuns(replyRunIDs(message)) : [];
                   return (
                     <Fragment key={message.id}>
+                      {streamsHere}
                       {showDate && <div className="sb-date-sep">{dateLabel(message.created_at)}</div>}
+                      {replyTools.length > 0 && (
+                        <div className="mb-2 space-y-1.5">
+                          <ToolGroup tools={replyTools} />
+                        </div>
+                      )}
                       <ChatMessage
                         message={message}
                         bot={
@@ -1810,36 +2003,7 @@ export default function HomePage() {
                     </Fragment>
                   );
                 })}
-                {!currentStream && (() => {
-                  const lastRun = [...messages].reverse().find((message) => message.run_id)?.run_id;
-                  const list = lastRun ? tools[lastRun] ?? [] : [];
-                  if (list.length === 0) return null;
-                  return (
-                    <div className="mb-2 space-y-1.5">
-                      <ToolGroup tools={list} />
-                    </div>
-                  );
-                })()}
-                {currentStream && (() => {
-                  const last = messages.at(-1);
-                  const showDate = !last || dateKey(last.created_at) !== dateKey(new Date().toISOString());
-                  return (
-                    <>
-                      {showDate && <div className="sb-date-sep">{dateLabel(new Date().toISOString())}</div>}
-                      {(tools[currentStream.runId] ?? []).length > 0 && (
-                        <div className="mb-2 space-y-1.5">
-                          <ToolGroup tools={tools[currentStream.runId] ?? []} />
-                        </div>
-                      )}
-                      <StreamingMessage
-                        stream={currentStream}
-                        bot={bots.find((bot) => bot.id === currentStream.botId) ?? activeBot}
-                        status={currentStatus}
-                        showSender={Boolean(activeTeam)}
-                      />
-                    </>
-                  );
-                })()}
+                {renderStreams(transcript.length)}
                 {cycleRetry && <CycleRetryRow retry={cycleRetry} />}
                 {cycleFailure !== null && (
                   <CycleFailureRow
@@ -1900,11 +2064,40 @@ export default function HomePage() {
                   >
                     <div className="flex items-center gap-2 text-[12px] font-medium text-[var(--sb-warn)]">
                       <ShieldAlert className="h-3.5 w-3.5" />
-                      需要你的批准：{approval.tool_name}
+                      {ruleRequest(approval)
+                        ? "主 Bot 申请一批免审批规则"
+                        : `需要你的批准：${approval.tool_name}`}
                     </div>
-                    <pre className="mt-2 max-h-28 overflow-auto rounded-lg bg-[var(--sb-pane)] p-2 font-[var(--sb-mono)] text-[11px] leading-[17px] text-[var(--sb-text-2)]">
-                      {JSON.stringify(approval.args ?? {}, null, 2)}
-                    </pre>
+                    {(() => {
+                      const request = ruleRequest(approval);
+                      if (!request) {
+                        return (
+                          <pre className="mt-2 max-h-28 overflow-auto rounded-lg bg-[var(--sb-pane)] p-2 font-[var(--sb-mono)] text-[11px] leading-[17px] text-[var(--sb-text-2)]">
+                            {JSON.stringify(approval.args ?? {}, null, 2)}
+                          </pre>
+                        );
+                      }
+                      return (
+                        <div className="mt-2 rounded-lg bg-[var(--sb-pane)] p-2.5 text-[12px] leading-[18px]">
+                          {request.summary && (
+                            <div className="mb-1.5 text-[var(--sb-text-2)]">{request.summary}</div>
+                          )}
+                          <ul className="max-h-40 space-y-1 overflow-auto">
+                            {request.rules.map((rule) => (
+                              <li key={rule.pattern} className="flex flex-wrap items-baseline gap-x-2">
+                                <code className="font-[var(--sb-mono)] text-[11px] text-[var(--sb-text)]">
+                                  {rule.pattern}
+                                </code>
+                                <span className="text-[var(--sb-text-3)]">{rule.reason}</span>
+                              </li>
+                            ))}
+                          </ul>
+                          <div className="mt-1.5 text-[11px] text-[var(--sb-text-3)]">
+                            批准后对账号下所有 Bot 生效，可在「设置 → 权限」随时删除。
+                          </div>
+                        </div>
+                      );
+                    })()}
                     <div className="mt-2 flex justify-end gap-2">
                       <button
                         type="button"
@@ -1915,24 +2108,38 @@ export default function HomePage() {
                       >
                         拒绝
                       </button>
-                      <button
-                        type="button"
-                        className="sb-btn"
-                        data-variant="secondary"
-                        data-size="sm"
-                        onClick={() => void resolveApproval(approval, "allow")}
-                      >
-                        允许一次
-                      </button>
-                      <button
-                        type="button"
-                        className="sb-btn"
-                        data-variant="primary"
-                        data-size="sm"
-                        onClick={() => void resolveApproval(approval, "allow", true)}
-                      >
-                        始终允许
-                      </button>
+                      {ruleRequest(approval) ? (
+                        <button
+                          type="button"
+                          className="sb-btn"
+                          data-variant="primary"
+                          data-size="sm"
+                          onClick={() => void resolveApproval(approval, "allow")}
+                        >
+                          批准这批规则
+                        </button>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            className="sb-btn"
+                            data-variant="secondary"
+                            data-size="sm"
+                            onClick={() => void resolveApproval(approval, "allow")}
+                          >
+                            允许一次
+                          </button>
+                          <button
+                            type="button"
+                            className="sb-btn"
+                            data-variant="primary"
+                            data-size="sm"
+                            onClick={() => void resolveApproval(approval, "allow", true)}
+                          >
+                            始终允许
+                          </button>
+                        </>
+                      )}
                     </div>
                   </div>
                 ))}

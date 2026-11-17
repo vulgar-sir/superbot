@@ -29,10 +29,16 @@ type vaultFillTool struct {
 	db      *store.DB
 	ownerID uuid.UUID
 	botID   uuid.UUID
+	// profile is the bot's computer profile (browser or desktop); asking for
+	// another one would rebuild the computer.
+	profile string
 }
 
-func NewVaultFillTool(manager *sandbox.Manager, vaultService *vault.Service, db *store.DB, ownerID, botID uuid.UUID) Tool {
-	return &vaultFillTool{manager: manager, vault: vaultService, db: db, ownerID: ownerID, botID: botID}
+func NewVaultFillTool(manager *sandbox.Manager, vaultService *vault.Service, db *store.DB, ownerID, botID uuid.UUID, profile string) Tool {
+	if profile != "desktop" {
+		profile = "browser"
+	}
+	return &vaultFillTool{manager: manager, vault: vaultService, db: db, ownerID: ownerID, botID: botID, profile: profile}
 }
 
 func (t *vaultFillTool) Name() string { return "vault_fill_credentials" }
@@ -96,7 +102,7 @@ func (t *vaultFillTool) Execute(ctx context.Context, raw json.RawMessage) (Resul
 		return Result{Content: "该保险库条目没有登录信息", IsError: true}, nil
 	}
 
-	info, err := t.manager.Ensure(ctx, t.ownerID, t.botID, "browser")
+	info, err := t.manager.Ensure(ctx, t.ownerID, t.botID, t.profile)
 	if err != nil {
 		return Result{Content: "启动浏览器失败: " + err.Error(), IsError: true}, nil
 	}
@@ -104,7 +110,7 @@ func (t *vaultFillTool) Execute(ctx context.Context, raw json.RawMessage) (Resul
 		return Result{Content: "浏览器调试端口不可用", IsError: true}, nil
 	}
 	script := buildFillScript(args.UsernameSelector, args.PasswordSelector, args.Submit, item.Username, password)
-	usernameFilled, passwordFilled, err := t.fill(ctx, info.CDPAddr, pageURL, script)
+	usernameFilled, passwordFilled, err := t.fill(ctx, info.CDPAddr, info.GateHeaders(), pageURL, script)
 	if err != nil {
 		return Result{Content: "填写失败: " + err.Error(), IsError: true}, nil
 	}
@@ -160,7 +166,7 @@ func buildFillScript(usernameSelector, passwordSelector string, submit bool, use
 })()`, userSel, userSel, userSel, passSel, userJSON, passJSON, submitJSON)
 }
 
-func (t *vaultFillTool) fill(ctx context.Context, cdpAddr, pageURL, script string) (bool, bool, error) {
+func (t *vaultFillTool) fill(ctx context.Context, cdpAddr string, gate http.Header, pageURL, script string) (bool, bool, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+cdpAddr+"/json/list", nil)
 	if err != nil {
@@ -171,6 +177,9 @@ func (t *vaultFillTool) fill(ctx context.Context, cdpAddr, pageURL, script strin
 	_, port, splitErr := strings.Cut(cdpAddr, ":")
 	if splitErr && port != "" {
 		request.Host = "127.0.0.1:" + port
+	}
+	for key, values := range gate {
+		request.Header[key] = values
 	}
 	response, err := client.Do(request)
 	if err != nil {
@@ -207,7 +216,7 @@ func (t *vaultFillTool) fill(ctx context.Context, cdpAddr, pageURL, script strin
 		parsedWS.Host = wsHost
 		wsURL = parsedWS.String()
 	}
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: gate})
 	if err != nil {
 		return false, false, err
 	}

@@ -36,6 +36,7 @@ import { Modal } from "./ui/Modal";
 import { BotAvatar } from "./BotAvatar";
 import { BotAvatarPicker } from "./BotAvatarPicker";
 import { GOAL_SECTION_ID } from "./GoalPanel";
+import { GroupMemoryList } from "./GroupMemoryList";
 import { useLanguage } from "./LanguageProvider";
 import { LibraryDownloadButton, LibraryPreview, downloadLibraryItem } from "./LibraryPreview";
 import { cn, formatBytes, timeAgo } from "@/lib/format";
@@ -653,6 +654,7 @@ export function BotDetailPanel({
               <>
                 {goalSection}
                 {routinesSection}
+                <GroupMemoryList teamId={team.id} />
                 <div className="sb-info-label">{t("detail.members")}</div>
                 <div className="sb-card overflow-hidden">
                   {team.bots.map((entry, index) => (

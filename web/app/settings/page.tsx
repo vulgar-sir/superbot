@@ -1856,7 +1856,7 @@ export function SettingsScreen({
                 <div>
                   <div className="text-[14px] font-medium">自动审核</div>
                   <div className="mt-0.5 text-[13px] text-[var(--sb-text-2)]">
-                    根据自定义规则审核 Bot 的操作
+                    默认只有高风险操作要审批：在你本人电脑上执行命令、使用保存的密码、增删连接器、删除数据。其他 Bot 的这类请求先由主 Bot 审批，它拿不准时再问你。关闭后，每个操作都要你批准。
                   </div>
                 </div>
                 <button

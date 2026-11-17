@@ -31,7 +31,7 @@ func TestDockerSandboxExec(t *testing.T) {
 	if image == "" {
 		image = "superbot/computer:latest"
 	}
-	name := "superbot-integration-" + uuid.NewString()
+	name := "sbtest-integration-" + uuid.NewString()
 	created, err := cli.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Name: name,
 		Config: &container.Config{

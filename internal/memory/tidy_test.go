@@ -26,7 +26,7 @@ func TestPlanTidyKeepsNewestExactDuplicate(t *testing.T) {
 	rows := tidyFixture(10)
 	rows[2].Content = "User prefers dark mode"
 	rows[7].Content = "user prefers  DARK mode."
-	plan := planTidy(rows, noSimilarity, tidySimilarity, tidyMaxFraction)
+	plan := planTidy(rows, noSimilarity, localSpace.TidyMin, tidyMaxFraction)
 	if len(plan) != 1 {
 		t.Fatalf("plan = %+v", plan)
 	}
@@ -44,7 +44,7 @@ func TestPlanTidyNearDuplicateUsesSimilarity(t *testing.T) {
 		}
 		return 0.94
 	}
-	plan := planTidy(rows, similarity, tidySimilarity, tidyMaxFraction)
+	plan := planTidy(rows, similarity, localSpace.TidyMin, tidyMaxFraction)
 	if len(plan) != 1 || plan[0].ID != rows[1].ID || plan[0].KeptID != rows[4].ID {
 		t.Fatalf("plan = %+v", plan)
 	}
@@ -60,7 +60,7 @@ func TestPlanTidyNeverArchivesPinned(t *testing.T) {
 	}
 	rows[0].Pinned = true
 	rows[3].Pinned = true
-	plan := planTidy(rows, noSimilarity, tidySimilarity, 1)
+	plan := planTidy(rows, noSimilarity, localSpace.TidyMin, 1)
 	if len(plan) != 1 || plan[0].ID != rows[9].ID {
 		t.Fatalf("only the unpinned copy may be archived, even though it is newest: %+v", plan)
 	}
@@ -73,7 +73,7 @@ func TestPlanTidyNeverArchivesPinned(t *testing.T) {
 		allPinned[i].Content = "same fact"
 		allPinned[i].Pinned = true
 	}
-	if plan := planTidy(allPinned, noSimilarity, tidySimilarity, 1); len(plan) != 0 {
+	if plan := planTidy(allPinned, noSimilarity, localSpace.TidyMin, 1); len(plan) != 0 {
 		t.Fatalf("pinned rows must never be touched: %+v", plan)
 	}
 }
@@ -83,7 +83,7 @@ func TestPlanTidyCapsChangesPerRun(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		rows[i].Content = "same fact"
 	}
-	plan := planTidy(rows, noSimilarity, tidySimilarity, tidyMaxFraction)
+	plan := planTidy(rows, noSimilarity, localSpace.TidyMin, tidyMaxFraction)
 	if len(plan) != 6 {
 		t.Fatalf("20%% of 30 rows is 6, got %d", len(plan))
 	}
@@ -98,16 +98,16 @@ func TestPlanTidyCapsChangesPerRun(t *testing.T) {
 
 	small := tidyFixture(3)
 	small[0].Content, small[1].Content, small[2].Content = "x fact", "x fact", "x fact"
-	if plan := planTidy(small, noSimilarity, tidySimilarity, tidyMaxFraction); len(plan) != 1 {
+	if plan := planTidy(small, noSimilarity, localSpace.TidyMin, tidyMaxFraction); len(plan) != 1 {
 		t.Fatalf("small scopes may change one row per run, got %d", len(plan))
 	}
 }
 
 func TestPlanTidyNothingToDo(t *testing.T) {
-	if plan := planTidy(tidyFixture(25), noSimilarity, tidySimilarity, tidyMaxFraction); len(plan) != 0 {
+	if plan := planTidy(tidyFixture(25), noSimilarity, localSpace.TidyMin, tidyMaxFraction); len(plan) != 0 {
 		t.Fatalf("distinct rows must be left alone: %+v", plan)
 	}
-	if plan := planTidy(tidyFixture(1), noSimilarity, tidySimilarity, tidyMaxFraction); plan != nil {
+	if plan := planTidy(tidyFixture(1), noSimilarity, localSpace.TidyMin, tidyMaxFraction); plan != nil {
 		t.Fatal("a single row cannot have duplicates")
 	}
 }
@@ -115,7 +115,7 @@ func TestPlanTidyNothingToDo(t *testing.T) {
 func TestVectorSimilarity(t *testing.T) {
 	a := tidyRow{Model: localModel, Vector: Embed("用户喜欢喝无糖的冰美式咖啡")}
 	b := tidyRow{Model: localModel, Vector: Embed("用户喜欢喝无糖的冰美式咖啡。")}
-	if score := vectorSimilarity(a, b); score < tidySimilarity {
+	if score := vectorSimilarity(a, b); score < localSpace.TidyMin {
 		t.Fatalf("near-identical text scored %.3f", score)
 	}
 	other := tidyRow{Model: "remote:text-embedding-3-small", Vector: a.Vector}

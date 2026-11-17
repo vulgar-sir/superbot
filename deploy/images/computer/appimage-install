@@ -1,0 +1,247 @@
+#!/usr/bin/env python3
+"""appimage-install: make an AppImage usable without FUSE or root.
+
+AppImages normally mount themselves with FUSE, which a computer without root
+cannot do. This extracts the AppImage once into the persistent home and
+creates a command and a desktop menu entry for it:
+
+  $HOME/.local/opt/NAME/                    the extracted application
+  $HOME/.local/bin/NAME                     command that starts it
+  $HOME/.local/share/applications/NAME.desktop
+
+usage:
+  appimage-install FILE_OR_URL [--name NAME] [--keep]
+  appimage-install --remove NAME
+  appimage-install --list
+
+--keep keeps the .AppImage file (in $HOME/Applications) after extraction.
+Running an AppImage directly also works: APPIMAGE_EXTRACT_AND_RUN=1 is set,
+so it unpacks itself to /tmp on every start (slower, nothing is kept).
+"""
+
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import urllib.parse
+import urllib.request
+
+HOME = os.environ.get("HOME") or "/workspace/.home"
+OPT = os.path.join(HOME, ".local", "opt")
+BIN = os.path.join(HOME, ".local", "bin")
+APPS = os.path.join(HOME, ".local", "share", "applications")
+DOWNLOADS = os.path.join(HOME, "Applications")
+MARKER = ".appimage-install"
+
+
+def say(message):
+    print(message, flush=True)
+
+
+def fail(message):
+    print("appimage-install: " + message, file=sys.stderr, flush=True)
+    sys.exit(1)
+
+
+def slug(text):
+    text = re.sub(r"\.appimage$", "", text, flags=re.I)
+    text = re.sub(r"[-_.]?(x86[-_]64|amd64|linux|v?\d+(\.\d+)+.*)$", "", text, flags=re.I)
+    text = re.sub(r"[^A-Za-z0-9._-]+", "-", text).strip("-._").lower()
+    return text or "app"
+
+
+def fetch(source):
+    if not re.match(r"^https?://", source):
+        path = os.path.abspath(source)
+        if not os.path.isfile(path):
+            fail("no such file: " + source)
+        return path, False
+    os.makedirs(DOWNLOADS, exist_ok=True)
+    name = os.path.basename(urllib.parse.urlparse(source).path) or "download.AppImage"
+    target = os.path.join(DOWNLOADS, name)
+    say("Downloading " + source)
+    request = urllib.request.Request(source, headers={"User-Agent": "appimage-install"})
+    with urllib.request.urlopen(request, timeout=60) as response, open(target + ".part", "wb") as out:
+        shutil.copyfileobj(response, out, 1 << 20)
+    os.replace(target + ".part", target)
+    return target, True
+
+
+def squashfs_offset(path):
+    """Byte offset of the squashfs image inside a type 2 AppImage."""
+    with open(path, "rb") as handle:
+        data = handle.read(8 << 20)
+    index = data.find(b"hsqs")
+    while index >= 0:
+        # A real superblock is followed by a plausible inode count and block size.
+        if index + 16 <= len(data):
+            block_size = int.from_bytes(data[index + 12:index + 16], "little")
+            if block_size and block_size & (block_size - 1) == 0 and 4096 <= block_size <= 1 << 20:
+                return index
+        index = data.find(b"hsqs", index + 1)
+    return -1
+
+
+def extract(path, work):
+    os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
+    env = dict(os.environ, APPIMAGE_EXTRACT_AND_RUN="")
+    result = subprocess.run([path, "--appimage-extract"], cwd=work, env=env,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    root = os.path.join(work, "squashfs-root")
+    if result.returncode == 0 and os.path.isdir(root):
+        return root
+    offset = squashfs_offset(path)
+    if offset < 0 or not shutil.which("unsquashfs"):
+        fail("could not extract the AppImage: " + (result.stderr or "").strip()[-500:])
+    shutil.rmtree(root, ignore_errors=True)
+    result = subprocess.run(["unsquashfs", "-q", "-n", "-o", str(offset), "-d", root, path],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    if result.returncode != 0 or not os.path.isdir(root):
+        fail("could not extract the AppImage: " + result.stderr.strip()[-500:])
+    return root
+
+
+def find_desktop(app_dir):
+    for entry in sorted(os.listdir(app_dir)):
+        if entry.endswith(".desktop"):
+            return os.path.join(app_dir, entry)
+    return ""
+
+
+def is_electron(app_dir):
+    """Electron (Chromium) apps cannot use their sandbox without root."""
+    base_depth = app_dir.rstrip(os.sep).count(os.sep)
+    for dirpath, dirnames, filenames in os.walk(app_dir):
+        if "chrome-sandbox" in filenames or "app.asar" in filenames:
+            return True
+        if dirpath.count(os.sep) - base_depth >= 4:
+            dirnames[:] = []
+    return False
+
+
+def install(source, name, keep):
+    path, downloaded = fetch(source)
+    name = slug(name or os.path.basename(path))
+    target = os.path.join(OPT, name)
+    os.makedirs(OPT, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=OPT, prefix=".extract-") as work:
+        root = extract(path, work)
+        if not os.path.exists(os.path.join(root, "AppRun")):
+            fail("the AppImage has no AppRun; it is not a usable AppImage")
+        if os.path.exists(target):
+            shutil.rmtree(target)
+        shutil.move(root, target)
+    with open(os.path.join(target, MARKER), "w") as handle:
+        handle.write(path + "\n")
+
+    flags = ' --no-sandbox' if is_electron(target) else ''
+    os.makedirs(BIN, exist_ok=True)
+    launcher = os.path.join(BIN, name)
+    with open(launcher, "w") as handle:
+        handle.write("#!/bin/sh\n"
+                     f"# Created by appimage-install for {os.path.basename(path)}\n"
+                     f'APPDIR="{target}"; export APPDIR\n'
+                     f'APPIMAGE="{path}"; export APPIMAGE\n'
+                     f'exec "$APPDIR/AppRun"{flags} "$@"\n')
+    os.chmod(launcher, 0o755)
+
+    title = name
+    desktop = find_desktop(target)
+    os.makedirs(APPS, exist_ok=True)
+    entry_path = os.path.join(APPS, name + ".desktop")
+    if desktop:
+        with open(desktop, encoding="utf-8", errors="replace") as handle:
+            lines = handle.read().splitlines()
+        out, section = [], ""
+        for line in lines:
+            if line.startswith("["):
+                section = line
+            key, sep, value = line.partition("=")
+            if section == "[Desktop Entry]" and sep:
+                if key == "Name" and title == name:
+                    title = value
+                if key in ("Exec", "TryExec"):
+                    args = value.split(" ", 1)
+                    line = key + "=" + launcher + (" " + args[1] if len(args) > 1 and key == "Exec" else "")
+                elif key == "Icon":
+                    for candidate in (os.path.join(target, value + ".png"), os.path.join(target, value + ".svg"),
+                                      os.path.join(target, ".DirIcon")):
+                        if os.path.exists(candidate):
+                            line = "Icon=" + candidate
+                            break
+            out.append(line)
+        content = "\n".join(out) + "\n"
+    else:
+        content = ("[Desktop Entry]\nType=Application\n"
+                   f"Name={name}\nExec={launcher} %U\nTerminal=false\n")
+    with open(entry_path, "w", encoding="utf-8") as handle:
+        handle.write(content)
+    if downloaded and not keep:
+        os.unlink(path)
+    say(f"Installed {title}.")
+    say(f"Command: {name}  ({launcher})")
+    say(f"Menu entry: {entry_path}")
+    if flags:
+        say("Electron app: the launcher adds --no-sandbox, which a computer without root needs.")
+    say("Start it with the desktop_launch tool, e.g. desktop_launch {\"command\": \"" + name + "\"}.")
+
+
+def remove(name):
+    name = slug(name)
+    target = os.path.join(OPT, name)
+    if not os.path.exists(os.path.join(target, MARKER)):
+        fail(name + " was not installed by appimage-install")
+    shutil.rmtree(target)
+    for path in (os.path.join(BIN, name), os.path.join(APPS, name + ".desktop")):
+        if os.path.exists(path):
+            os.unlink(path)
+    say("Removed " + name)
+
+
+def list_apps():
+    found = False
+    if os.path.isdir(OPT):
+        for name in sorted(os.listdir(OPT)):
+            if os.path.exists(os.path.join(OPT, name, MARKER)):
+                say(name)
+                found = True
+    if not found:
+        say("No AppImages installed.")
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        say(__doc__.strip())
+        return 0
+    if argv[0] == "--list":
+        list_apps()
+        return 0
+    if argv[0] == "--remove":
+        if len(argv) < 2:
+            fail("usage: appimage-install --remove NAME")
+        remove(argv[1])
+        return 0
+    source, name, keep = "", "", False
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--name" and i + 1 < len(argv):
+            name = argv[i + 1]
+            i += 2
+            continue
+        if arg == "--keep":
+            keep = True
+        elif not source:
+            source = arg
+        i += 1
+    if not source:
+        fail("usage: appimage-install FILE_OR_URL [--name NAME] [--keep]")
+    install(source, name, keep)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

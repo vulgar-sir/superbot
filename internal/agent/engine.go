@@ -47,7 +47,7 @@ import (
 
 const (
 	defaultMaxSteps      = 15
-	computerMaxSteps     = 20
+	computerMaxSteps     = 30 // a desktop task takes a tool call per look and per action
 	maxMaxSteps          = 40
 	defaultMaxOutput     = 32768
 	maxToolResultBytes   = 16 * 1024
@@ -158,6 +158,9 @@ type runSeed struct {
 	PendingCalls     []llm.ToolCall
 	ApprovalDecision string
 	Continuation     []llm.Message
+	// PriorRunID is the run that paused for the approval this seed resumes.
+	// What it already said and did belongs to the reply this run finishes.
+	PriorRunID *uuid.UUID
 }
 
 type botParams struct {
@@ -227,6 +230,12 @@ func (e *Engine) ProcessCycle(ctx context.Context, cycle store.Cycle, leaseID uu
 			e.setCycleStatus(context.WithoutCancel(ctx), cycle, leaseID, "canceled", "")
 			return nil
 		case errors.Is(err, errApprovalPending):
+			if outcome != nil && !outcome.RunsFinalized {
+				// The run that asked is over; the approval resumes the
+				// reply in a new run. Left "running" it would look busy
+				// forever.
+				e.finishRun(ctx, outcome, "interrupted", "等待工具审批", "")
+			}
 			e.setCycleStatus(context.WithoutCancel(ctx), cycle, leaseID, "waiting_approval", "")
 			return nil
 		case ctx.Err() != nil:
@@ -442,15 +451,22 @@ func (e *Engine) runBotTurnSeeded(ctx context.Context, conv store.Conversation, 
 				result = e.executeTool(ctx, conv, cycle, run, bot, registry, pendingCall)
 			case index == 0:
 				result = tools.Result{Content: "用户拒绝了该工具调用。", IsError: true}
-			case e.toolNeedsApproval(ctx, bot, pendingCall):
+			default:
 				// The remaining calls of the same step each get their own
 				// decision instead of being silently dropped.
-				if err := e.pauseForApproval(ctx, conv, cycle, run, bot, seed.PendingCalls[index:], messages, seed.Step); err != nil {
-					return outcome, err
+				gate, refused := e.gateTool(ctx, conv, cycle, run, bot, pendingCall, messages)
+				switch gate {
+				case gatePause:
+					if err := e.pauseForApproval(ctx, conv, cycle, run, bot, seed.PendingCalls[index:], messages, seed.Step); err != nil {
+						return outcome, err
+					}
+					return outcome, errApprovalPending
+				case gateDeny:
+					e.refuseToolCall(ctx, conv, cycle, run, pendingCall, refused.Content)
+					result = refused
+				default:
+					result = e.executeTool(ctx, conv, cycle, run, bot, registry, pendingCall)
 				}
-				return outcome, errApprovalPending
-			default:
-				result = e.executeTool(ctx, conv, cycle, run, bot, registry, pendingCall)
 			}
 			messages = append(messages, llm.ToolResultMessage(pendingCall.ID, pendingCall.Name, result.Content, result.IsError))
 		}
@@ -505,6 +521,37 @@ func (e *Engine) runBotTurnSeeded(ctx context.Context, conv store.Conversation, 
 	continuations := 0
 	idsChecked := false
 	stoppedEarly := false
+	// A run that resumes after a tool approval finishes the reply the paused
+	// run began: its words open this run's text and its tool calls stay tied
+	// to the final message, instead of vanishing with the paused run.
+	var resumedFrom []string
+	var carried string
+	if seed != nil && seed.PriorRunID != nil {
+		carried, resumedFrom = e.pausedRunCarry(ctx, *seed.PriorRunID)
+	}
+	// Tell the reader how far into the conversation this run has read: a
+	// message sent from now on arrived while the reply was being written and
+	// is shown after it, not between the question and the answer.
+	if err := e.appendEvent(ctx, conv.ID, &cycle.ID, &run.ID, events.TypeStatus, map[string]any{
+		"run_id":       run.ID.String(),
+		"bot_id":       bot.ID.String(),
+		"status":       "running",
+		"seen_ordinal": lastSeenOrdinal,
+		"resumed_from": resumedFrom,
+	}); err != nil {
+		return outcome, err
+	}
+	if carried != "" {
+		carried += "\n\n"
+		textAll.WriteString(carried)
+		if err := e.appendEvent(ctx, conv.ID, &cycle.ID, &run.ID, events.TypeTextDelta, map[string]any{
+			"run_id": run.ID.String(),
+			"bot_id": bot.ID.String(),
+			"text":   carried,
+		}); err != nil {
+			return outcome, err
+		}
+	}
 	for step := startStep; step <= maxSteps; step++ {
 		if err := ctx.Err(); err != nil {
 			return outcome, context.Cause(ctx)
@@ -521,6 +568,7 @@ func (e *Engine) runBotTurnSeeded(ctx context.Context, conv store.Conversation, 
 					"bot_id":                 bot.ID.String(),
 					"status":                 "running",
 					"interjection_delivered": delivered,
+					"seen_ordinal":           lastSeenOrdinal,
 				})
 			}
 		}
@@ -635,6 +683,7 @@ func (e *Engine) runBotTurnSeeded(ctx context.Context, conv store.Conversation, 
 						llm.AssistantMessage(turn.Text, turn.Reasoning, nil),
 						llm.TextMessage(llm.RoleUser, fabricatedIDsNotice(ids)))
 					textAll.Reset()
+					textAll.WriteString(carried)
 					if step >= maxSteps {
 						maxSteps = step + 2
 					}
@@ -653,6 +702,7 @@ func (e *Engine) runBotTurnSeeded(ctx context.Context, conv store.Conversation, 
 			}
 		}
 		messages = append(messages, llm.AssistantMessage(turn.Text, turn.Reasoning, turn.ToolCalls))
+		var stepImages []toolImage
 		for i := range turn.ToolCalls {
 			call := turn.ToolCalls[i]
 			if truncatedToolCall(call, turn.FinishReason) {
@@ -663,20 +713,30 @@ func (e *Engine) runBotTurnSeeded(ctx context.Context, conv store.Conversation, 
 			}
 			// A tool the model made up is not run, so there is nothing to
 			// approve; it gets the unknown-tool error and a hint instead.
-			if registry.Has(call.Name) && e.toolNeedsApproval(ctx, bot, call) {
-				e.closeProgress(ctx, cycle.ID)
-				if err := e.pauseForApproval(ctx, conv, cycle, run, bot, turn.ToolCalls[i:], messages, step); err != nil {
-					return outcome, err
+			if registry.Has(call.Name) {
+				gate, refused := e.gateTool(ctx, conv, cycle, run, bot, call, messages)
+				if gate == gatePause {
+					e.closeProgress(ctx, cycle.ID)
+					if err := e.pauseForApproval(ctx, conv, cycle, run, bot, turn.ToolCalls[i:], messages, step); err != nil {
+						return outcome, err
+					}
+					return outcome, errApprovalPending
 				}
-				return outcome, errApprovalPending
+				if gate == gateDeny {
+					e.refuseToolCall(ctx, conv, cycle, run, call, refused.Content)
+					messages = append(messages, llm.ToolResultMessage(call.ID, call.Name, refused.Content, true))
+					continue
+				}
 			}
 			result := e.executeTool(ctx, conv, cycle, run, bot, registry, call)
 			messages = append(messages, llm.ToolResultMessage(call.ID, call.Name, result.Content, result.IsError))
+			stepImages = collectToolImages(stepImages, call.Name, result)
 			if !seenTools[call.Name] {
 				seenTools[call.Name] = true
 				usedTools = append(usedTools, call.Name)
 			}
 		}
+		messages = appendToolImages(messages, stepImages, modelRow != nil && modelRow.SupportsVision)
 		e.saveProgress(ctx, conv, cycle, run, bot, messages, pinned, step)
 		if step == maxSteps {
 			outcome.Warning = "达到工具调用步数上限"
@@ -701,7 +761,7 @@ func (e *Engine) runBotTurnSeeded(ctx context.Context, conv store.Conversation, 
 			finalText = "（模型未返回文本）"
 		}
 	}
-	metadata, _ := json.Marshal(map[string]any{
+	meta := map[string]any{
 		"reasoning":   strings.TrimSpace(reasoningAll.String()),
 		"warning":     outcome.Warning,
 		"estimated":   outcome.Estimated,
@@ -710,7 +770,13 @@ func (e *Engine) runBotTurnSeeded(ctx context.Context, conv store.Conversation, 
 		// seen_ordinal is how far into the conversation the bot had read
 		// when it wrote this reply; anything newer arrived too late for it.
 		"seen_ordinal": lastSeenOrdinal,
-	})
+	}
+	if len(resumedFrom) > 0 {
+		// The runs that paused for approval on the way to this reply; their
+		// tool calls are part of it.
+		meta["resumed_from"] = resumedFrom
+	}
+	metadata, _ := json.Marshal(meta)
 
 	finalMessage, err := e.insertFinalMessage(ctx, conv.ID, cycle.ID, leaseID, bot.ID, run.ID, finalText, metadata)
 	if err != nil {
@@ -804,12 +870,13 @@ func (e *Engine) buildRegistry(ctx context.Context, root *os.Root, bot store.Bot
 		all = append(all,
 			tools.NewShellTool(e.sandbox, bot.OwnerID, bot.ID, bot.ComputerProfile),
 			tools.NewPythonTool(e.sandbox, bot.OwnerID, bot.ID, bot.ComputerProfile),
+			tools.NewShellJobsTool(e.sandbox, bot.OwnerID, bot.ID, bot.ComputerProfile),
 		)
 		if bot.ComputerProfile == "desktop" {
 			all = append(all, tools.NewDesktopTools(e.sandbox, bot.OwnerID, bot.ID)...)
 		}
 		if bot.ComputerProfile == "browser" || bot.ComputerProfile == "desktop" {
-			all = append(all, tools.NewVaultFillTool(e.sandbox, vault.NewService(e.db, e.box), e.db, bot.OwnerID, bot.ID))
+			all = append(all, tools.NewVaultFillTool(e.sandbox, vault.NewService(e.db, e.box), e.db, bot.OwnerID, bot.ID, bot.ComputerProfile))
 		}
 	}
 	all = append(all,
@@ -850,10 +917,11 @@ func (e *Engine) buildRegistry(ctx context.Context, root *os.Root, bot store.Bot
 		tools.NewCalDAVCreateTool(e.connectors, e.caldav, bot.OwnerID),
 	)
 	if bot.MemoryEnabled {
+		memoryCtx := e.memoryContext(ctx, bot, conv, cycle, teamID)
 		all = append(all,
-			tools.NewMemorySaveTool(e.memory, bot.OwnerID, bot.ID, teamID),
-			tools.NewMemorySearchTool(e.memory, bot.OwnerID, bot.ID, teamID),
-			tools.NewMemoryForgetTool(e.memory, bot.OwnerID, bot.ID, teamID),
+			tools.NewMemorySaveTool(e.memory, memoryCtx),
+			tools.NewMemorySearchTool(e.memory, memoryCtx),
+			tools.NewMemoryForgetTool(e.memory, memoryCtx),
 		)
 	}
 	proactiveConversation := uuid.Nil
@@ -878,16 +946,29 @@ func (e *Engine) buildRegistry(ctx context.Context, root *os.Root, bot store.Bot
 				tools.NewAdminCreateGroupTool(e.db, e.chatSvc, bot.OwnerID),
 				tools.NewAdminCreateRoutineTool(e.db, e.routineSvc, bot.OwnerID, bot.ID),
 				tools.NewAdminSetPrimaryBotTool(e.db, bot.OwnerID, bot.ID),
+				tools.NewPermissionRulesTool(e.db, bot.OwnerID),
 			)
 		}
 	}
 	if e.agentChat != nil {
+		// In a group the teammates are in the room: they are called in with
+		// an @ in the reply, where everyone can follow, not by private message.
+		var roomMembers map[uuid.UUID]string
+		if conv.Kind == "team" && conv.TeamID != nil {
+			if rows, err := e.db.ListTeamBots(ctx, *conv.TeamID); err == nil {
+				roomMembers = make(map[uuid.UUID]string, len(rows))
+				for _, row := range rows {
+					roomMembers[row.Bot.ID] = row.Bot.Name
+				}
+			}
+		}
 		all = append(all, &agentMessageTool{
-			chat:       e.agentChat,
-			ownerID:    bot.OwnerID,
-			senderID:   bot.ID,
-			originConv: conv.ID,
-			hop:        e.triggerHop(ctx, conv, cycle),
+			chat:        e.agentChat,
+			ownerID:     bot.OwnerID,
+			senderID:    bot.ID,
+			originConv:  conv.ID,
+			hop:         e.triggerHop(ctx, conv, cycle),
+			roomMembers: roomMembers,
 		})
 	}
 	var parentTaskID *uuid.UUID
@@ -941,7 +1022,9 @@ func (e *Engine) buildRegistry(ctx context.Context, root *os.Root, bot store.Bot
 			cleanup = toolset.Close
 		}
 	}
-	if bot.ComputerProfile == "none" && e.sandbox != nil && !disabled["computer_enable"] {
+	// Without a computer the bot can start one; with the browser computer it
+	// can upgrade to the desktop.
+	if bot.ComputerProfile != "desktop" && e.sandbox != nil && !disabled["computer_enable"] {
 		own := bot
 		registry.Register(&computerEnableTool{engine: e, bot: &own, registry: registry})
 	}
@@ -1146,20 +1229,14 @@ func (e *Engine) buildMessages(ctx context.Context, bot store.Bot, conv store.Co
 		}
 	}
 
+	// A bot with memory switched off neither writes nor reads memories.
 	memoryBlock := ""
-	for i := len(recent) - 1; i >= 0; i-- {
+	for i := len(recent) - 1; bot.MemoryEnabled && i >= 0; i-- {
 		if recent[i].SenderType != "user" || strings.TrimSpace(recent[i].Content) == "" {
 			continue
 		}
-		recallUserID := conv.DirectUserID
-		if recalled := e.memory.Recall(ctx, bot.OwnerID, bot.ID, conv.TeamID, recallUserID, recent[i].Content, 6); len(recalled) > 0 {
-			var sb strings.Builder
-			sb.WriteString("## 相关记忆\n以下是从长期记忆中自动召回的相关事实；它们可能过时，以当前对话与工具结果为准。\n")
-			for _, memoryItem := range recalled {
-				fmt.Fprintf(&sb, "- [%s] %s\n", memoryItem.ScopeType, truncateForCoordinator(memoryItem.Content, 400))
-			}
-			memoryBlock = sb.String()
-		}
+		memoryBlock = memoryRecallBlock(e.memory.Recall(ctx, bot.OwnerID, bot.ID, conv.TeamID,
+			recallUserID(conv, recent[i]), recent[i].Content, 6))
 		break
 	}
 	// Order matters for provider prefix caching: the system prompt and the
@@ -1368,21 +1445,23 @@ loop:
 	return turn, nil
 }
 
-func (e *Engine) toolNeedsApproval(ctx context.Context, bot store.Bot, call llm.ToolCall) bool {
+// toolApproval says whether a call needs a decision before it runs and
+// whether the primary bot may make it (see approvalNeed).
+func (e *Engine) toolApproval(ctx context.Context, bot store.Bot, call llm.ToolCall) (need, delegable bool) {
 	autoReview, err := e.db.GetUserAutoReview(ctx, bot.OwnerID)
 	if err != nil {
 		// Fail closed: an unreadable policy must not silently allow tools.
-		return true
+		return true, false
 	}
 	if !autoReview {
 		// Auto-review off means "ask for every operation", not "skip checks".
-		return true
+		return true, false
 	}
 	rules, err := e.db.ListPermissionRules(ctx, bot.OwnerID)
 	if err != nil {
-		return true
+		return true, false
 	}
-	return approvalRequired(autoReview, rules, call)
+	return approvalNeed(autoReview, rules, call)
 }
 
 func maskApprovalArgs(raw json.RawMessage) json.RawMessage {
@@ -1510,7 +1589,7 @@ func (e *Engine) executeTool(ctx context.Context, conv store.Conversation, cycle
 	if err := e.appendEvent(ctx, conv.ID, &cycle.ID, &run.ID, events.TypeToolResult, payload); err != nil {
 		e.logger.Warn("append tool_result event failed", "run_id", run.ID, "error", err)
 	}
-	return tools.Result{Content: content, IsError: result.IsError, ArtifactPath: artifactPath, WidgetHTML: result.WidgetHTML}
+	return tools.Result{Content: content, IsError: result.IsError, ArtifactPath: artifactPath, WidgetHTML: result.WidgetHTML, Images: result.Images}
 }
 
 func (e *Engine) writeArtifact(botID, runID uuid.UUID, callID, content string) string {

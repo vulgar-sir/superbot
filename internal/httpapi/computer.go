@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"superbot/internal/sandbox"
 	"superbot/internal/store"
 )
 
@@ -186,6 +187,9 @@ func (s *Server) handleComputerLive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	prefix := "/api/bots/" + botID.String() + "/computer/live"
+	// The computer's noVNC sits behind its gate, which only lets in requests
+	// carrying the computer's secret; the browser never sees it.
+	gateToken := sandbox.GateToken(s.cfg.SecretKey, botID)
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.Director = nil
 	proxy.Rewrite = func(pr *httputil.ProxyRequest) {
@@ -196,6 +200,7 @@ func (s *Server) handleComputerLive(w http.ResponseWriter, r *http.Request) {
 		}
 		pr.Out.Host = target.Host
 		pr.SetXForwarded()
+		pr.Out.Header.Set(sandbox.GateHeader, gateToken)
 	}
 	proxy.FlushInterval = -1
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {

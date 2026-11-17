@@ -46,6 +46,7 @@ type Querier interface {
 	// Counts results delivered to a conversation since the user last spoke; used
 	// to stop bots from waking each other indefinitely.
 	CountInjectedSinceLastUser(ctx context.Context, conversationID uuid.UUID) (int32, error)
+	CountMemoriesNeedingReembed(ctx context.Context, embeddingModel string) (int64, error)
 	CountUnreadActivities(ctx context.Context, arg CountUnreadActivitiesParams) (int64, error)
 	CountUnreadNotifications(ctx context.Context, ownerID uuid.UUID) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
@@ -113,7 +114,6 @@ type Querier interface {
 	DeferComputerRemoval(ctx context.Context, arg DeferComputerRemovalParams) error
 	DeleteAgentConversationsForBot(ctx context.Context, botAID uuid.UUID) error
 	DeleteBot(ctx context.Context, arg DeleteBotParams) (int64, error)
-	DeleteBotMemory(ctx context.Context, arg DeleteBotMemoryParams) (int64, error)
 	DeleteBotRoutine(ctx context.Context, arg DeleteBotRoutineParams) (int64, error)
 	DeleteBotTemplate(ctx context.Context, arg DeleteBotTemplateParams) (int64, error)
 	DeleteCalendarEvent(ctx context.Context, arg DeleteCalendarEventParams) (int64, error)
@@ -141,6 +141,7 @@ type Querier interface {
 	DeletePushSubscription(ctx context.Context, arg DeletePushSubscriptionParams) (int64, error)
 	DeleteResourceACL(ctx context.Context, arg DeleteResourceACLParams) error
 	DeleteRoutine(ctx context.Context, arg DeleteRoutineParams) (int64, error)
+	DeleteScopedMemory(ctx context.Context, arg DeleteScopedMemoryParams) (int64, error)
 	DeleteSession(ctx context.Context, tokenHash []byte) error
 	DeleteSideChat(ctx context.Context, arg DeleteSideChatParams) (int64, error)
 	DeleteSidebarSection(ctx context.Context, arg DeleteSidebarSectionParams) (int64, error)
@@ -149,7 +150,6 @@ type Querier interface {
 	DeleteTask(ctx context.Context, arg DeleteTaskParams) (int64, error)
 	DeleteTeam(ctx context.Context, arg DeleteTeamParams) (int64, error)
 	DeleteUser(ctx context.Context, id uuid.UUID) (int64, error)
-	DeleteUserMemory(ctx context.Context, arg DeleteUserMemoryParams) (int64, error)
 	DeleteUserSessions(ctx context.Context, userID uuid.UUID) error
 	DeleteVaultItem(ctx context.Context, arg DeleteVaultItemParams) (int64, error)
 	DeleteWebAuthnCredential(ctx context.Context, arg DeleteWebAuthnCredentialParams) (int64, error)
@@ -296,6 +296,8 @@ type Querier interface {
 	ListEnabledSkills(ctx context.Context, botID uuid.UUID) ([]Skill, error)
 	ListEventsAfter(ctx context.Context, arg ListEventsAfterParams) ([]Event, error)
 	ListExpiredPendingApprovals(ctx context.Context) ([]ToolApproval, error)
+	// The running computers StopIdleWorkspaces would put to sleep now.
+	ListIdleRunningWorkspaces(ctx context.Context, idle string) ([]ListIdleRunningWorkspacesRow, error)
 	// Messages that should reach a bot that is already working: user interjections
 	// plus results delivered by other bots and subagents.
 	ListInjectableMessagesAfterOrdinal(ctx context.Context, arg ListInjectableMessagesAfterOrdinalParams) ([]Message, error)
@@ -305,12 +307,17 @@ type Querier interface {
 	ListMemories(ctx context.Context, arg ListMemoriesParams) ([]Memory, error)
 	ListMemoriesIncludingArchived(ctx context.Context, arg ListMemoriesIncludingArchivedParams) ([]Memory, error)
 	// Archived rows are included on purpose: a restored memory must already live
-	// in the current vector space or recall would never find it.
+	// in the current vector space or recall would never find it. Active rows
+	// come first and the newest of them first, because those are the ones recall
+	// is missing right now; exclude_ids skips rows that failed in this process.
 	ListMemoriesNeedingReembed(ctx context.Context, arg ListMemoriesNeedingReembedParams) ([]Memory, error)
 	ListMemoryScopesForTidy(ctx context.Context, arg ListMemoryScopesForTidyParams) ([]ListMemoryScopesForTidyRow, error)
 	ListMessageReactions(ctx context.Context, arg ListMessageReactionsParams) ([]ListMessageReactionsRow, error)
 	ListMessages(ctx context.Context, conversationID uuid.UUID) ([]Message, error)
 	ListMessagesAfterOrdinal(ctx context.Context, arg ListMessagesAfterOrdinalParams) ([]Message, error)
+	// Oldest first, so the reviewer can walk the whole unreviewed range in
+	// windows. sender_user_id comes from the message metadata the chat service
+	// stamps; the CASE keeps a malformed value from failing the cast.
 	ListMessagesForMemoryReview(ctx context.Context, arg ListMessagesForMemoryReviewParams) ([]ListMessagesForMemoryReviewRow, error)
 	ListMessagesInOrdinalRange(ctx context.Context, arg ListMessagesInOrdinalRangeParams) ([]Message, error)
 	ListModelsByProvider(ctx context.Context, providerID uuid.UUID) ([]Model, error)
@@ -324,6 +331,7 @@ type Querier interface {
 	ListProvidersByType(ctx context.Context, arg ListProvidersByTypeParams) ([]Provider, error)
 	ListPushSubscriptionsByAccount(ctx context.Context, accountID uuid.UUID) ([]PushSubscription, error)
 	ListPushSubscriptionsByUser(ctx context.Context, userID uuid.UUID) ([]PushSubscription, error)
+	ListRecentMemories(ctx context.Context, arg ListRecentMemoriesParams) ([]Memory, error)
 	ListRecentMessages(ctx context.Context, arg ListRecentMessagesParams) ([]Message, error)
 	ListResourceACL(ctx context.Context, arg ListResourceACLParams) ([]ListResourceACLRow, error)
 	ListRoutinesByOwner(ctx context.Context, ownerID uuid.UUID) ([]Routine, error)
@@ -400,6 +408,11 @@ type Querier interface {
 	SearchConversationMessages(ctx context.Context, arg SearchConversationMessagesParams) ([]Message, error)
 	SearchMemories(ctx context.Context, arg SearchMemoriesParams) ([]Memory, error)
 	SearchMemoriesByEmbedding(ctx context.Context, arg SearchMemoriesByEmbeddingParams) ([]Memory, error)
+	// Ordered by the computed similarity on purpose: an ORDER BY on the bare
+	// distance lets the planner pick the table-wide HNSW index, which returns the
+	// nearest rows of every account and filters by scope afterwards, so a small
+	// scope in a large table silently loses hits. Scopes are small enough for an
+	// exact scan over the scope index.
 	SearchMemoriesScored(ctx context.Context, arg SearchMemoriesScoredParams) ([]SearchMemoriesScoredRow, error)
 	SearchMessages(ctx context.Context, arg SearchMessagesParams) ([]SearchMessagesRow, error)
 	SeedDocumentCRDTUpdate(ctx context.Context, arg SeedDocumentCRDTUpdateParams) (SeedDocumentCRDTUpdateRow, error)
@@ -430,6 +443,10 @@ type Querier interface {
 	SetMcpServerStatus(ctx context.Context, arg SetMcpServerStatusParams) (McpServer, error)
 	SetMeetingSummary(ctx context.Context, arg SetMeetingSummaryParams) (Meeting, error)
 	SetMemoryEmbedding(ctx context.Context, arg SetMemoryEmbeddingParams) error
+	// Writes a vector only if the text it was computed from is still the
+	// memory's text, so a background re-embed cannot overwrite the vector of an
+	// edit that happened while the embedding call was in flight.
+	SetMemoryEmbeddingForContent(ctx context.Context, arg SetMemoryEmbeddingForContentParams) (int64, error)
 	SetMemoryPinned(ctx context.Context, arg SetMemoryPinnedParams) (Memory, error)
 	SetMessageCycle(ctx context.Context, arg SetMessageCycleParams) error
 	SetMessagePinned(ctx context.Context, arg SetMessagePinnedParams) (Message, error)
@@ -452,6 +469,9 @@ type Querier interface {
 	SoftDeleteMessage(ctx context.Context, id uuid.UUID) (Message, error)
 	StopIdleWorkspaces(ctx context.Context, idle string) (int64, error)
 	SumCycleUsage(ctx context.Context, cycleID *uuid.UUID) (int64, error)
+	// Archives a memory a newer one replaced. Pinned rows are left alone unless
+	// allow_pinned is set: only the user retires what the user pinned.
+	SupersedeMemory(ctx context.Context, arg SupersedeMemoryParams) (Memory, error)
 	TakeOAuthState(ctx context.Context, stateHash string) (TakeOAuthStateRow, error)
 	TakeWebAuthnSession(ctx context.Context, sessionKey string) (TakeWebAuthnSessionRow, error)
 	TouchAgentThread(ctx context.Context, id uuid.UUID) error
@@ -459,9 +479,9 @@ type Querier interface {
 	TouchBotServiceToken(ctx context.Context, id uuid.UUID) error
 	TouchConversation(ctx context.Context, id uuid.UUID) error
 	TouchDevice(ctx context.Context, id uuid.UUID) error
+	TouchWorkspaceUsed(ctx context.Context, botID uuid.UUID) error
 	UpdateAccountCredits(ctx context.Context, arg UpdateAccountCreditsParams) error
 	UpdateBot(ctx context.Context, arg UpdateBotParams) (Bot, error)
-	UpdateBotMemory(ctx context.Context, arg UpdateBotMemoryParams) (Memory, error)
 	UpdateBotProfile(ctx context.Context, arg UpdateBotProfileParams) (Bot, error)
 	UpdateBotRoutine(ctx context.Context, arg UpdateBotRoutineParams) (BotRoutine, error)
 	UpdateConnectorTokens(ctx context.Context, arg UpdateConnectorTokensParams) (Connector, error)
@@ -475,12 +495,14 @@ type Querier interface {
 	UpdateRoutine(ctx context.Context, arg UpdateRoutineParams) (Routine, error)
 	UpdateRunCheckpointMessages(ctx context.Context, arg UpdateRunCheckpointMessagesParams) error
 	UpdateRunStep(ctx context.Context, arg UpdateRunStepParams) error
+	// The vector of the old text goes with it; the caller stores the new one, or
+	// the background re-embed does when the embedding service is unavailable.
+	UpdateScopedMemory(ctx context.Context, arg UpdateScopedMemoryParams) (Memory, error)
 	UpdateSessionAccount(ctx context.Context, arg UpdateSessionAccountParams) (int64, error)
 	UpdateSidebarSection(ctx context.Context, arg UpdateSidebarSectionParams) (SidebarSection, error)
 	UpdateTask(ctx context.Context, arg UpdateTaskParams) (Task, error)
 	UpdateTeam(ctx context.Context, arg UpdateTeamParams) (Team, error)
 	UpdateTeamPlacement(ctx context.Context, arg UpdateTeamPlacementParams) (Team, error)
-	UpdateUserMemory(ctx context.Context, arg UpdateUserMemoryParams) (Memory, error)
 	UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) error
 	UpdateVaultItem(ctx context.Context, arg UpdateVaultItemParams) (VaultItem, error)
 	UpdateWebAuthnCredential(ctx context.Context, arg UpdateWebAuthnCredentialParams) error

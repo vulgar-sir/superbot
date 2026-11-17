@@ -1,9 +1,16 @@
-FROM superbot/computer:latest
+# Built on top of the browser computer image; pass --build-arg BASE_IMAGE to
+# build against another tag (for example a test build).
+ARG BASE_IMAGE=superbot/computer:latest
+FROM ${BASE_IMAGE}
 
 USER root
+# mousepad gives the bot a plain text editor on the desktop; libglib2.0-bin
+# provides glib-compile-schemas, which userapt uses for GTK programs.
 RUN apt-get update \
     && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
         dbus-x11 \
+        libglib2.0-bin \
+        mousepad \
         xfce4 \
         xfce4-terminal \
         xfce4-settings \

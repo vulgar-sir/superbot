@@ -148,6 +148,46 @@ func (s *Service) GetConversation(ctx context.Context, accountID, userID, conver
 	return conv, messages, nil
 }
 
+// SenderUserIDKey is the message metadata key naming the person who sent a
+// user message. In a group several people of one account share a room; the
+// memory system uses it to recall and store facts for the right person.
+const SenderUserIDKey = "sender_user_id"
+
+// withSender stamps the authenticated sender into the metadata, replacing any
+// value a caller supplied.
+func withSender(metadata json.RawMessage, userID uuid.UUID) (json.RawMessage, error) {
+	fields := map[string]any{}
+	if len(metadata) > 0 {
+		if err := json.Unmarshal(metadata, &fields); err != nil {
+			return nil, err
+		}
+		if fields == nil {
+			fields = map[string]any{}
+		}
+	}
+	if userID != uuid.Nil {
+		fields[SenderUserIDKey] = userID.String()
+	} else {
+		delete(fields, SenderUserIDKey)
+	}
+	return json.Marshal(fields)
+}
+
+// SenderUserID reads the sender stamped by SendUserMessage.
+func SenderUserID(metadata json.RawMessage) *uuid.UUID {
+	var fields struct {
+		Sender string `json:"sender_user_id"`
+	}
+	if len(metadata) == 0 || json.Unmarshal(metadata, &fields) != nil {
+		return nil
+	}
+	id, err := uuid.Parse(fields.Sender)
+	if err != nil || id == uuid.Nil {
+		return nil
+	}
+	return &id
+}
+
 // SendUserMessage appends a user message and, when the room is idle, creates a
 // cycle for the worker to pick up. When a cycle is already running the message
 // is an interjection: it is stored and the running worker will see it before
@@ -171,8 +211,9 @@ func (s *Service) SendUserMessage(
 	if len(clientMsgID) > maxClientMsgID {
 		return SendResult{}, fmt.Errorf("%w: client_msg_id is too long", ErrInvalid)
 	}
-	if len(metadata) == 0 {
-		metadata = json.RawMessage(`{}`)
+	metadata, err := withSender(metadata, userID)
+	if err != nil {
+		return SendResult{}, fmt.Errorf("%w: metadata must be a JSON object", ErrInvalid)
 	}
 
 	tx, err := s.db.Pool.Begin(ctx)

@@ -130,6 +130,19 @@ func (q *Queries) ClaimMemoryReview(ctx context.Context, arg ClaimMemoryReviewPa
 	return result.RowsAffected(), nil
 }
 
+const countMemoriesNeedingReembed = `-- name: CountMemoriesNeedingReembed :one
+SELECT count(*)::bigint
+FROM memories
+WHERE embedding IS NULL OR embedding_model <> $1
+`
+
+func (q *Queries) CountMemoriesNeedingReembed(ctx context.Context, embeddingModel string) (int64, error) {
+	row := q.db.QueryRow(ctx, countMemoriesNeedingReembed, embeddingModel)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const createMemory = `-- name: CreateMemory :one
 INSERT INTO memories (
     owner_id, scope_type, scope_id, content, metadata,
@@ -229,28 +242,6 @@ func (q *Queries) CreateMemoryText(ctx context.Context, arg CreateMemoryTextPara
 	return i, err
 }
 
-const deleteBotMemory = `-- name: DeleteBotMemory :execrows
-DELETE FROM memories
-WHERE id = $1
-  AND owner_id = $2
-  AND scope_type = 'bot'
-  AND scope_id = $3
-`
-
-type DeleteBotMemoryParams struct {
-	ID      uuid.UUID `json:"id"`
-	OwnerID uuid.UUID `json:"owner_id"`
-	ScopeID uuid.UUID `json:"scope_id"`
-}
-
-func (q *Queries) DeleteBotMemory(ctx context.Context, arg DeleteBotMemoryParams) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteBotMemory, arg.ID, arg.OwnerID, arg.ScopeID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
 const deleteMemory = `-- name: DeleteMemory :execrows
 DELETE FROM memories
 WHERE id = $1 AND owner_id = $2
@@ -269,22 +260,28 @@ func (q *Queries) DeleteMemory(ctx context.Context, arg DeleteMemoryParams) (int
 	return result.RowsAffected(), nil
 }
 
-const deleteUserMemory = `-- name: DeleteUserMemory :execrows
+const deleteScopedMemory = `-- name: DeleteScopedMemory :execrows
 DELETE FROM memories
 WHERE id = $1
   AND owner_id = $2
-  AND scope_type = 'user'
-  AND scope_id = $3
+  AND scope_type = $3
+  AND scope_id = $4
 `
 
-type DeleteUserMemoryParams struct {
-	ID      uuid.UUID `json:"id"`
-	OwnerID uuid.UUID `json:"owner_id"`
-	ScopeID uuid.UUID `json:"scope_id"`
+type DeleteScopedMemoryParams struct {
+	ID        uuid.UUID `json:"id"`
+	OwnerID   uuid.UUID `json:"owner_id"`
+	ScopeType string    `json:"scope_type"`
+	ScopeID   uuid.UUID `json:"scope_id"`
 }
 
-func (q *Queries) DeleteUserMemory(ctx context.Context, arg DeleteUserMemoryParams) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteUserMemory, arg.ID, arg.OwnerID, arg.ScopeID)
+func (q *Queries) DeleteScopedMemory(ctx context.Context, arg DeleteScopedMemoryParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteScopedMemory,
+		arg.ID,
+		arg.OwnerID,
+		arg.ScopeType,
+		arg.ScopeID,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -544,20 +541,24 @@ func (q *Queries) ListMemoriesIncludingArchived(ctx context.Context, arg ListMem
 
 const listMemoriesNeedingReembed = `-- name: ListMemoriesNeedingReembed :many
 SELECT id, owner_id, scope_type, scope_id, content, embedding, metadata, created_at, account_id, embedding_model, source, pinned, archived_at, source_conversation_id, source_ordinal, updated_at FROM memories
-WHERE embedding IS NULL OR embedding_model <> $1
-ORDER BY created_at
-LIMIT $2
+WHERE (embedding IS NULL OR embedding_model <> $1)
+  AND NOT (id = ANY($2::uuid[]))
+ORDER BY (archived_at IS NOT NULL), updated_at DESC
+LIMIT $3
 `
 
 type ListMemoriesNeedingReembedParams struct {
-	EmbeddingModel string `json:"embedding_model"`
-	MaxRows        int32  `json:"max_rows"`
+	EmbeddingModel string      `json:"embedding_model"`
+	ExcludeIds     []uuid.UUID `json:"exclude_ids"`
+	MaxRows        int32       `json:"max_rows"`
 }
 
 // Archived rows are included on purpose: a restored memory must already live
-// in the current vector space or recall would never find it.
+// in the current vector space or recall would never find it. Active rows
+// come first and the newest of them first, because those are the ones recall
+// is missing right now; exclude_ids skips rows that failed in this process.
 func (q *Queries) ListMemoriesNeedingReembed(ctx context.Context, arg ListMemoriesNeedingReembedParams) ([]Memory, error) {
-	rows, err := q.db.Query(ctx, listMemoriesNeedingReembed, arg.EmbeddingModel, arg.MaxRows)
+	rows, err := q.db.Query(ctx, listMemoriesNeedingReembed, arg.EmbeddingModel, arg.ExcludeIds, arg.MaxRows)
 	if err != nil {
 		return nil, err
 	}
@@ -641,15 +642,25 @@ func (q *Queries) ListMemoryScopesForTidy(ctx context.Context, arg ListMemorySco
 }
 
 const listMessagesForMemoryReview = `-- name: ListMessagesForMemoryReview :many
-SELECT m.ordinal, m.sender_type, m.content, COALESCE(b.name, '')::text AS bot_name
+SELECT m.ordinal,
+       m.sender_type,
+       m.content,
+       COALESCE(b.name, '')::text AS bot_name,
+       u.id AS sender_user_id,
+       COALESCE(u.display_name, '')::text AS sender_user_name
 FROM messages m
 LEFT JOIN bots b ON b.id = m.sender_bot_id
+LEFT JOIN users u ON m.sender_type = 'user'
+    AND u.id = CASE
+        WHEN m.metadata->>'sender_user_id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        THEN (m.metadata->>'sender_user_id')::uuid
+    END
 WHERE m.conversation_id = $1
   AND m.ordinal > $2
   AND m.deleted_at IS NULL
   AND m.sender_type IN ('user', 'bot')
   AND btrim(m.content) <> ''
-ORDER BY m.ordinal DESC
+ORDER BY m.ordinal
 LIMIT $3
 `
 
@@ -660,12 +671,17 @@ type ListMessagesForMemoryReviewParams struct {
 }
 
 type ListMessagesForMemoryReviewRow struct {
-	Ordinal    int64  `json:"ordinal"`
-	SenderType string `json:"sender_type"`
-	Content    string `json:"content"`
-	BotName    string `json:"bot_name"`
+	Ordinal        int64      `json:"ordinal"`
+	SenderType     string     `json:"sender_type"`
+	Content        string     `json:"content"`
+	BotName        string     `json:"bot_name"`
+	SenderUserID   *uuid.UUID `json:"sender_user_id"`
+	SenderUserName string     `json:"sender_user_name"`
 }
 
+// Oldest first, so the reviewer can walk the whole unreviewed range in
+// windows. sender_user_id comes from the message metadata the chat service
+// stamps; the CASE keeps a malformed value from failing the cast.
 func (q *Queries) ListMessagesForMemoryReview(ctx context.Context, arg ListMessagesForMemoryReviewParams) ([]ListMessagesForMemoryReviewRow, error) {
 	rows, err := q.db.Query(ctx, listMessagesForMemoryReview, arg.ConversationID, arg.AfterOrdinal, arg.MaxRows)
 	if err != nil {
@@ -680,6 +696,65 @@ func (q *Queries) ListMessagesForMemoryReview(ctx context.Context, arg ListMessa
 			&i.SenderType,
 			&i.Content,
 			&i.BotName,
+			&i.SenderUserID,
+			&i.SenderUserName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRecentMemories = `-- name: ListRecentMemories :many
+SELECT id, owner_id, scope_type, scope_id, content, embedding, metadata, created_at, account_id, embedding_model, source, pinned, archived_at, source_conversation_id, source_ordinal, updated_at FROM memories
+WHERE owner_id = $1 AND scope_type = $2 AND scope_id = $3
+  AND archived_at IS NULL
+ORDER BY pinned DESC, updated_at DESC
+LIMIT $4
+`
+
+type ListRecentMemoriesParams struct {
+	OwnerID   uuid.UUID `json:"owner_id"`
+	ScopeType string    `json:"scope_type"`
+	ScopeID   uuid.UUID `json:"scope_id"`
+	Limit     int32     `json:"limit"`
+}
+
+func (q *Queries) ListRecentMemories(ctx context.Context, arg ListRecentMemoriesParams) ([]Memory, error) {
+	rows, err := q.db.Query(ctx, listRecentMemories,
+		arg.OwnerID,
+		arg.ScopeType,
+		arg.ScopeID,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Memory{}
+	for rows.Next() {
+		var i Memory
+		if err := rows.Scan(
+			&i.ID,
+			&i.OwnerID,
+			&i.ScopeType,
+			&i.ScopeID,
+			&i.Content,
+			&i.Embedding,
+			&i.Metadata,
+			&i.CreatedAt,
+			&i.AccountID,
+			&i.EmbeddingModel,
+			&i.Source,
+			&i.Pinned,
+			&i.ArchivedAt,
+			&i.SourceConversationID,
+			&i.SourceOrdinal,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -707,6 +782,7 @@ func (q *Queries) RecordMemoryReviewFailure(ctx context.Context, conversationID 
 const refreshMemory = `-- name: RefreshMemory :one
 UPDATE memories
 SET content = $1,
+    embedding = CASE WHEN content = $1 THEN embedding END,
     pinned = pinned OR $2::boolean,
     updated_at = now()
 WHERE id = $3 AND owner_id = $4
@@ -752,6 +828,7 @@ func (q *Queries) RefreshMemory(ctx context.Context, arg RefreshMemoryParams) (M
 const restoreMemory = `-- name: RestoreMemory :one
 UPDATE memories
 SET archived_at = NULL,
+    metadata = metadata - 'superseded_by' - 'superseded_reason',
     updated_at = now()
 WHERE id = $1 AND owner_id = $2
 RETURNING id, owner_id, scope_type, scope_id, content, embedding, metadata, created_at, account_id, embedding_model, source, pinned, archived_at, source_conversation_id, source_ordinal, updated_at
@@ -929,7 +1006,7 @@ WHERE memories.owner_id = $1
   AND memories.embedding IS NOT NULL
   AND memories.embedding_model = $5
   AND (1 - (memories.embedding <=> $4::text::vector)) >= $6::float8
-ORDER BY memories.embedding <=> $4::text::vector
+ORDER BY similarity DESC, memories.updated_at DESC
 LIMIT $7
 `
 
@@ -948,6 +1025,11 @@ type SearchMemoriesScoredRow struct {
 	Similarity float64 `json:"similarity"`
 }
 
+// Ordered by the computed similarity on purpose: an ORDER BY on the bare
+// distance lets the planner pick the table-wide HNSW index, which returns the
+// nearest rows of every account and filters by scope afterwards, so a small
+// scope in a large table silently loses hits. Scopes are small enough for an
+// exact scan over the scope index.
 func (q *Queries) SearchMemoriesScored(ctx context.Context, arg SearchMemoriesScoredParams) ([]SearchMemoriesScoredRow, error) {
 	rows, err := q.db.Query(ctx, searchMemoriesScored,
 		arg.OwnerID,
@@ -1018,6 +1100,40 @@ func (q *Queries) SetMemoryEmbedding(ctx context.Context, arg SetMemoryEmbedding
 	return err
 }
 
+const setMemoryEmbeddingForContent = `-- name: SetMemoryEmbeddingForContent :execrows
+UPDATE memories
+SET embedding = $1::text::vector,
+    embedding_model = $2
+WHERE id = $3
+  AND owner_id = $4
+  AND content = $5
+`
+
+type SetMemoryEmbeddingForContentParams struct {
+	Embedding      string    `json:"embedding"`
+	EmbeddingModel string    `json:"embedding_model"`
+	ID             uuid.UUID `json:"id"`
+	OwnerID        uuid.UUID `json:"owner_id"`
+	Content        string    `json:"content"`
+}
+
+// Writes a vector only if the text it was computed from is still the
+// memory's text, so a background re-embed cannot overwrite the vector of an
+// edit that happened while the embedding call was in flight.
+func (q *Queries) SetMemoryEmbeddingForContent(ctx context.Context, arg SetMemoryEmbeddingForContentParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setMemoryEmbeddingForContent,
+		arg.Embedding,
+		arg.EmbeddingModel,
+		arg.ID,
+		arg.OwnerID,
+		arg.Content,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const setMemoryPinned = `-- name: SetMemoryPinned :one
 UPDATE memories
 SET pinned = $1,
@@ -1056,30 +1172,43 @@ func (q *Queries) SetMemoryPinned(ctx context.Context, arg SetMemoryPinnedParams
 	return i, err
 }
 
-const updateBotMemory = `-- name: UpdateBotMemory :one
+const supersedeMemory = `-- name: SupersedeMemory :one
 UPDATE memories
-SET content = $1,
-    updated_at = now()
-WHERE id = $2
-  AND owner_id = $3
-  AND scope_type = 'bot'
-  AND scope_id = $4
+SET archived_at = now(),
+    updated_at = now(),
+    metadata = metadata || jsonb_build_object(
+        'superseded_by', $1::text,
+        'superseded_reason', $2::text)
+WHERE id = $3
+  AND owner_id = $4
+  AND scope_type = $5
+  AND scope_id = $6
+  AND archived_at IS NULL
+  AND (pinned = false OR $7::boolean)
 RETURNING id, owner_id, scope_type, scope_id, content, embedding, metadata, created_at, account_id, embedding_model, source, pinned, archived_at, source_conversation_id, source_ordinal, updated_at
 `
 
-type UpdateBotMemoryParams struct {
-	Content string    `json:"content"`
-	ID      uuid.UUID `json:"id"`
-	OwnerID uuid.UUID `json:"owner_id"`
-	ScopeID uuid.UUID `json:"scope_id"`
+type SupersedeMemoryParams struct {
+	SupersededBy string    `json:"superseded_by"`
+	Reason       string    `json:"reason"`
+	ID           uuid.UUID `json:"id"`
+	OwnerID      uuid.UUID `json:"owner_id"`
+	ScopeType    string    `json:"scope_type"`
+	ScopeID      uuid.UUID `json:"scope_id"`
+	AllowPinned  bool      `json:"allow_pinned"`
 }
 
-func (q *Queries) UpdateBotMemory(ctx context.Context, arg UpdateBotMemoryParams) (Memory, error) {
-	row := q.db.QueryRow(ctx, updateBotMemory,
-		arg.Content,
+// Archives a memory a newer one replaced. Pinned rows are left alone unless
+// allow_pinned is set: only the user retires what the user pinned.
+func (q *Queries) SupersedeMemory(ctx context.Context, arg SupersedeMemoryParams) (Memory, error) {
+	row := q.db.QueryRow(ctx, supersedeMemory,
+		arg.SupersededBy,
+		arg.Reason,
 		arg.ID,
 		arg.OwnerID,
+		arg.ScopeType,
 		arg.ScopeID,
+		arg.AllowPinned,
 	)
 	var i Memory
 	err := row.Scan(
@@ -1103,29 +1232,34 @@ func (q *Queries) UpdateBotMemory(ctx context.Context, arg UpdateBotMemoryParams
 	return i, err
 }
 
-const updateUserMemory = `-- name: UpdateUserMemory :one
+const updateScopedMemory = `-- name: UpdateScopedMemory :one
 UPDATE memories
 SET content = $1,
+    embedding = NULL,
     updated_at = now()
 WHERE id = $2
   AND owner_id = $3
-  AND scope_type = 'user'
-  AND scope_id = $4
+  AND scope_type = $4
+  AND scope_id = $5
 RETURNING id, owner_id, scope_type, scope_id, content, embedding, metadata, created_at, account_id, embedding_model, source, pinned, archived_at, source_conversation_id, source_ordinal, updated_at
 `
 
-type UpdateUserMemoryParams struct {
-	Content string    `json:"content"`
-	ID      uuid.UUID `json:"id"`
-	OwnerID uuid.UUID `json:"owner_id"`
-	ScopeID uuid.UUID `json:"scope_id"`
+type UpdateScopedMemoryParams struct {
+	Content   string    `json:"content"`
+	ID        uuid.UUID `json:"id"`
+	OwnerID   uuid.UUID `json:"owner_id"`
+	ScopeType string    `json:"scope_type"`
+	ScopeID   uuid.UUID `json:"scope_id"`
 }
 
-func (q *Queries) UpdateUserMemory(ctx context.Context, arg UpdateUserMemoryParams) (Memory, error) {
-	row := q.db.QueryRow(ctx, updateUserMemory,
+// The vector of the old text goes with it; the caller stores the new one, or
+// the background re-embed does when the embedding service is unavailable.
+func (q *Queries) UpdateScopedMemory(ctx context.Context, arg UpdateScopedMemoryParams) (Memory, error) {
+	row := q.db.QueryRow(ctx, updateScopedMemory,
 		arg.Content,
 		arg.ID,
 		arg.OwnerID,
+		arg.ScopeType,
 		arg.ScopeID,
 	)
 	var i Memory

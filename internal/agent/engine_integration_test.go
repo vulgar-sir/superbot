@@ -469,6 +469,13 @@ func TestIntegrationApprovalMidPipelineContinues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create team conversation: %v", err)
 	}
+	// Writing in the bot's own workspace no longer asks by default; the
+	// user's own rule makes it, and keeps the decision with the user.
+	if _, err := f.db.CreatePermissionRule(ctx, store.CreatePermissionRuleParams{
+		OwnerID: f.account, Kind: "always_ask", Pattern: "workspace_write",
+	}); err != nil {
+		t.Fatalf("create permission rule: %v", err)
+	}
 	f.send(conv, `[[tool:workspace_write {"path":"note.txt","content":"hi"}]]`)
 
 	approve := func(stage string) {

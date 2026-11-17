@@ -15,9 +15,9 @@ import (
 func TestMemoryToolSchemas(t *testing.T) {
 	team := uuid.New()
 	tools := []Tool{
-		NewMemorySaveTool(nil, uuid.New(), uuid.New(), &team),
-		NewMemorySearchTool(nil, uuid.New(), uuid.New(), &team),
-		NewMemoryForgetTool(nil, uuid.New(), uuid.New(), &team),
+		NewMemorySaveTool(nil, MemoryContext{OwnerID: uuid.New(), BotID: uuid.New(), TeamID: &team}),
+		NewMemorySearchTool(nil, MemoryContext{OwnerID: uuid.New(), BotID: uuid.New(), TeamID: &team}),
+		NewMemoryForgetTool(nil, MemoryContext{OwnerID: uuid.New(), BotID: uuid.New(), TeamID: &team}),
 	}
 	wantNames := []string{"memory_save", "memory_search", "memory_forget"}
 	for i, tool := range tools {
@@ -50,7 +50,7 @@ func TestMemoryToolSchemas(t *testing.T) {
 // The secret check runs before the service is touched, so a nil service is
 // enough to prove nothing is stored.
 func TestMemorySaveRefusesSecrets(t *testing.T) {
-	tool := NewMemorySaveTool(nil, uuid.New(), uuid.New(), nil)
+	tool := NewMemorySaveTool(nil, MemoryContext{OwnerID: uuid.New(), BotID: uuid.New()})
 	result, err := tool.Execute(context.Background(), json.RawMessage(`{"content":"OpenAI key: sk-proj-AbCdEf0123456789AbCdEf0123456789"}`))
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -85,10 +85,77 @@ func TestMemoryLineMarksPinned(t *testing.T) {
 }
 
 func TestMemoryForgetValidatesArguments(t *testing.T) {
-	tool := NewMemoryForgetTool(nil, uuid.New(), uuid.New(), nil)
+	tool := NewMemoryForgetTool(nil, MemoryContext{OwnerID: uuid.New(), BotID: uuid.New()})
 	for _, raw := range []string{`{}`, `{"id":"  ","content":" "}`, `{"id":"not-a-uuid"}`, `not json`} {
 		if _, err := tool.Execute(context.Background(), json.RawMessage(raw)); err == nil {
 			t.Errorf("arguments %s must be rejected", raw)
 		}
+	}
+}
+
+func TestMemoryScopesStayWithTheCurrentPerson(t *testing.T) {
+	bot, team, user := uuid.New(), uuid.New(), uuid.New()
+	withPerson := MemoryContext{BotID: bot, TeamID: &team, UserID: &user}
+	scopes := withPerson.scopes()
+	if len(scopes) != 3 || scopes[0] != (memory.Scope{Type: "bot", ID: bot}) ||
+		scopes[1] != (memory.Scope{Type: "user", ID: user}) || scopes[2] != (memory.Scope{Type: "team", ID: team}) {
+		t.Fatalf("scopes = %+v", scopes)
+	}
+	for requested, want := range map[string]memory.Scope{
+		"":     {Type: "user", ID: user},
+		"user": {Type: "user", ID: user},
+		"USER": {Type: "user", ID: user},
+		"bot":  {Type: "bot", ID: bot},
+		"team": {Type: "team", ID: team},
+	} {
+		got, err := withPerson.scope(requested)
+		if err != nil || got != want {
+			t.Errorf("scope(%q) = %+v, %v; want %+v", requested, got, err, want)
+		}
+	}
+	if _, err := withPerson.scope("global"); err == nil {
+		t.Error("an unknown scope must be refused")
+	}
+
+	// Without a known person (a routine, an old conversation) there is no
+	// user scope at all: nobody else's memories can be reached.
+	nobody := MemoryContext{BotID: bot}
+	if got, err := nobody.scope(""); err != nil || got != (memory.Scope{Type: "bot", ID: bot}) {
+		t.Fatalf("default without a person = %+v, %v", got, err)
+	}
+	if _, err := nobody.scope("user"); err == nil {
+		t.Fatal("scope=user without a person must be refused")
+	}
+	if _, err := nobody.scope("team"); err == nil {
+		t.Fatal("scope=team outside a group must be refused")
+	}
+	if got := nobody.scopes(); len(got) != 1 || got[0].Type != "bot" {
+		t.Fatalf("scopes without a person = %+v", got)
+	}
+}
+
+func TestMemorySaveRefusesUnavailableScope(t *testing.T) {
+	tool := NewMemorySaveTool(nil, MemoryContext{OwnerID: uuid.New(), BotID: uuid.New()})
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{"content":"用户喜欢简洁回答","scope":"user"}`))
+	if err != nil || !result.IsError || !strings.Contains(result.Content, "scope=user") {
+		t.Fatalf("result = %+v, %v", result, err)
+	}
+}
+
+func TestSaveReportIsTruthful(t *testing.T) {
+	saved := memory.SaveResult{Memory: store.Memory{ID: uuid.New()}, Pending: true}
+	report := saveReport("user", saved)
+	if !strings.HasPrefix(report, "memory saved (user)") || !strings.Contains(report, "stored") || strings.Contains(strings.ToLower(report), "error") {
+		t.Fatalf("a pending save is a save: %q", report)
+	}
+	old := store.Memory{ID: uuid.New(), ScopeType: "user", Content: "测试服务器的 SSH 端口是 2222"}
+	pinned := store.Memory{ID: uuid.New(), ScopeType: "user", Content: "用户住在西湖区", Pinned: true}
+	report = saveReport("user", memory.SaveResult{Superseded: []store.Memory{old}, PinnedConflicts: []store.Memory{pinned}})
+	if !strings.Contains(report, old.ID.String()) || !strings.Contains(report, "Retired") ||
+		!strings.Contains(report, pinned.ID.String()) || !strings.Contains(report, "only the user") {
+		t.Fatalf("report must name what was retired and what needs the user: %q", report)
+	}
+	if got := saveReport("bot", memory.SaveResult{Duplicate: true}); got != saveMessage("bot", true) {
+		t.Fatalf("a plain duplicate = %q", got)
 	}
 }

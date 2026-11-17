@@ -1,0 +1,726 @@
+#!/usr/bin/env python3
+"""userapt: install Debian packages without root.
+
+The bot has no root on its computer, so `apt-get install` cannot work.
+userapt resolves a package and its missing dependencies with apt (against
+the system's package database plus what userapt installed before),
+downloads the .deb files and unpacks them under $HOME/.local/apt, which is
+in the persistent workspace. The computer's environment (env.sh) puts that
+tree on PATH, LD_LIBRARY_PATH and XDG_DATA_DIRS, so commands, libraries and
+desktop menu entries of unpacked packages work like installed ones.
+
+Maintainer scripts do not run. userapt redoes the parts that matter for
+running programs: update-alternatives links, absolute links into the
+package, .desktop launchers, Python modules, fonts and GSettings schemas.
+Packages already in the image are never unpacked again, and a package that
+would need a newer version of a system package is skipped with a warning.
+
+Many programs look for their data at the path they were built for, such as
+/usr/share/PROGRAM. For a package with such private directories userapt
+puts a launcher in $HOME/.local/bin that starts the program under proot
+(user-space bind mounts, no root), mapping those paths to the unpacked
+tree; `userapt run PROGRAM` does the same by hand.
+
+usage:
+  userapt install PKG...   install packages (and missing dependencies)
+  userapt remove PKG...    remove packages installed by userapt
+  userapt list             list packages installed by userapt
+  userapt search WORD...   search available packages
+  userapt show PKG         show package details
+  userapt files PKG        list the files of an installed package
+  userapt run PROGRAM ...  run a program with the unpacked data paths mapped
+  userapt update           refresh the package lists (automatic after a day)
+"""
+
+import fcntl
+import glob
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+HOME = os.environ.get("HOME") or "/workspace/.home"
+ROOT = os.environ.get("SB_APT_ROOT") or os.path.join(HOME, ".local", "apt")
+STATE = os.path.join(ROOT, "var", "lib", "userapt")
+INFO = os.path.join(STATE, "info")
+STATUS = os.path.join(STATE, "status")
+COMBINED_STATUS = os.path.join(STATE, "dpkg-status")
+LISTS = os.path.join(ROOT, "var", "lib", "apt", "lists")
+TMP = os.environ.get("TMPDIR") or "/tmp"
+CACHE = os.path.join(TMP, "userapt-cache")
+CONF = os.path.join(STATE, "apt.conf")
+SYSTEM_STATUS = "/var/lib/dpkg/status"
+LISTS_MAX_AGE = 24 * 3600
+BINDS = os.path.join(STATE, "binds")
+LAUNCHERS = os.path.join(HOME, ".local", "bin")
+LAUNCHER_MARK = "# userapt launcher"
+
+# Directories under which a package's own subdirectory is mapped into place
+# when the system does not have it (longest prefix first).
+BIND_PREFIXES = ("/usr/lib/x86_64-linux-gnu/", "/usr/share/", "/usr/libexec/", "/usr/lib/",
+                 "/etc/", "/opt/", "/var/lib/", "/var/games/")
+# Shared directories found through search paths (XDG_DATA_DIRS, PATH, ...)
+# instead; never mapped.
+SHARED_DIRS = {
+    "applications", "icons", "pixmaps", "doc", "doc-base", "man", "info", "locale", "glib-2.0",
+    "fonts", "mime", "metainfo", "appdata", "bash-completion", "lintian", "menu", "python3",
+    "x86_64-linux-gnu", "perl5", "girepository-1.0", "pkgconfig", "dbus-1", "polkit-1",
+    "gtk-3.0", "gtk-2.0", "gtk-4.0", "themes", "sounds", "help", "gnome", "zsh", "fish",
+    "systemd", "udev", "tmpfiles.d", "sysusers.d", "alternatives", "apport", "debhelper",
+}
+
+# Fields kept when recording an unpacked package. Relationships are dropped
+# on purpose: apt must treat these packages as satisfied, not try to "fix"
+# their dependencies against the read-only system.
+KEEP_FIELDS = (
+    "Package", "Architecture", "Multi-Arch", "Version", "Provides", "Source",
+    "Section", "Priority", "Installed-Size", "Maintainer", "Description",
+)
+
+INST_RE = re.compile(r"^Inst (\S+) (?:\[(\S+)\] )?\((\S+) (.*?)\)")
+REMV_RE = re.compile(r"^Remv (\S+)")
+ALT_RE = re.compile(r"update-alternatives\s+(?:--quiet\s+)?--install\s+(\S+)\s+(\S+)\s+(\S+)\s+\d+(.*)")
+SLAVE_RE = re.compile(r"--slave\s+(\S+)\s+(\S+)\s+(\S+)")
+
+
+def say(message=""):
+    print(message, flush=True)
+
+
+def fail(message, code=1):
+    print("userapt: " + message, file=sys.stderr, flush=True)
+    sys.exit(code)
+
+
+def ensure_dirs():
+    for path in (STATE, INFO, LISTS, os.path.join(LISTS, "partial"), CACHE,
+                 os.path.join(CACHE, "archives", "partial")):
+        os.makedirs(path, exist_ok=True)
+
+
+def write_conf():
+    user = os.environ.get("USER") or str(os.getuid())
+    try:
+        import pwd
+        user = pwd.getpwuid(os.getuid()).pw_name
+    except (ImportError, KeyError):
+        pass
+    conf = f"""
+Dir::State "{ROOT}/var/lib/apt";
+Dir::State::Lists "{LISTS}";
+Dir::State::status "{COMBINED_STATUS}";
+Dir::Cache "{CACHE}";
+Dir::Cache::archives "{CACHE}/archives";
+Dir::Cache::pkgcache "";
+Dir::Cache::srcpkgcache "";
+Debug::NoLocking "true";
+APT::Sandbox::User "{user}";
+Acquire::Languages "none";
+Acquire::GzipIndexes "true";
+Acquire::Retries "3";
+APT::Install-Recommends "false";
+APT::Install-Suggests "false";
+APT::Get::List-Cleanup "true";
+"""
+    with open(CONF, "w") as handle:
+        handle.write(conf)
+    os.environ["APT_CONFIG"] = CONF
+
+
+def read_stanzas(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+    except FileNotFoundError:
+        return []
+    return [block for block in text.split("\n\n") if block.strip()]
+
+
+def stanza_field(stanza, name):
+    match = re.search(r"^" + re.escape(name) + r":[ \t]*(.*)$", stanza, re.M)
+    return match.group(1).strip() if match else ""
+
+
+def user_packages():
+    out = {}
+    for stanza in read_stanzas(STATUS):
+        name = stanza_field(stanza, "Package")
+        if name:
+            out[name] = stanza
+    return out
+
+
+def system_packages():
+    out = set()
+    for stanza in read_stanzas(SYSTEM_STATUS):
+        if "install ok installed" in stanza_field(stanza, "Status"):
+            out.add(stanza_field(stanza, "Package"))
+    return out
+
+
+def save_user_packages(packages):
+    tmp = STATUS + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        for name in sorted(packages):
+            handle.write(packages[name].strip() + "\n\n")
+    os.replace(tmp, STATUS)
+    write_combined_status(packages)
+
+
+def write_combined_status(packages=None):
+    if packages is None:
+        packages = user_packages()
+    system = set()
+    tmp = COMBINED_STATUS + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as out:
+        for stanza in read_stanzas(SYSTEM_STATUS):
+            system.add(stanza_field(stanza, "Package"))
+            out.write(stanza.strip() + "\n\n")
+        for name, stanza in packages.items():
+            # A package the image now ships itself wins over the old copy.
+            if name not in system:
+                out.write(stanza.strip() + "\n\n")
+    os.replace(tmp, COMBINED_STATUS)
+
+
+def run(cmd, capture=True, check=True):
+    result = subprocess.run(cmd, stdout=subprocess.PIPE if capture else None,
+                            stderr=subprocess.PIPE if capture else None, text=True)
+    if check and result.returncode != 0:
+        detail = ((result.stderr or "") + (result.stdout or "")).strip() if capture else ""
+        fail(f"{' '.join(cmd[:3])} failed (exit {result.returncode})" + (":\n" + detail[-3000:] if detail else ""))
+    return result
+
+
+def lists_age():
+    newest = 0
+    for path in glob.glob(os.path.join(LISTS, "*Packages*")):
+        newest = max(newest, os.path.getmtime(path))
+    return time.time() - newest if newest else None
+
+
+def update(force=False):
+    age = lists_age()
+    if not force and age is not None and age < LISTS_MAX_AGE:
+        return
+    say("Refreshing package lists ...")
+    result = run(["apt-get", "-q", "update"], check=False)
+    if result.returncode != 0 or lists_age() is None:
+        fail("could not download the package lists (is the network up?):\n" + (result.stderr or result.stdout or "")[-2000:])
+
+
+def simulate(names):
+    result = run(["apt-get", "-s", "-q", "-y", "install", "--no-install-recommends"] + names, check=False)
+    if result.returncode != 0:
+        message = (result.stderr or "") + (result.stdout or "")
+        hint = ""
+        if "Unable to locate package" in message:
+            hint = "\nHint: check the name with `userapt search WORD`."
+        fail("apt could not plan the installation:\n" + message.strip()[-3000:] + hint)
+    installs, removes = [], []
+    for line in result.stdout.splitlines():
+        match = INST_RE.match(line)
+        if match:
+            name, old, new, rest = match.groups()
+            arch = rest.split("[")[-1].rstrip("]") if "[" in rest else ""
+            installs.append((name, old, new, arch))
+            continue
+        match = REMV_RE.match(line)
+        if match:
+            removes.append(match.group(1))
+    return installs, removes
+
+
+def deb_control(deb):
+    return run(["dpkg-deb", "-f", deb]).stdout
+
+
+def record_stanza(control):
+    lines = []
+    for name in KEEP_FIELDS:
+        block = re.search(r"^" + re.escape(name) + r":.*(?:\n[ \t].*)*", control, re.M)
+        if block:
+            lines.append(block.group(0))
+        if name == "Package":
+            lines.append("Status: install ok installed")
+    return "\n".join(lines)
+
+
+def deb_files(deb):
+    """Absolute paths of everything in the package's data archive."""
+    archive = subprocess.Popen(["dpkg-deb", "--fsys-tarfile", deb], stdout=subprocess.PIPE)
+    listing = subprocess.run(["tar", "-tf", "-"], stdin=archive.stdout, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True)
+    archive.stdout.close()
+    if archive.wait() != 0 or listing.returncode != 0:
+        fail("cannot list " + os.path.basename(deb) + ": " + listing.stderr.strip())
+    files = []
+    for line in listing.stdout.splitlines():
+        path = line.rstrip("\n")
+        if path.startswith("./"):
+            path = path[1:]
+        path = path.rstrip("/")
+        if path:
+            files.append(path)
+    return files
+
+
+def maintainer_alternatives(deb):
+    """update-alternatives links a package's postinst would create."""
+    links = []
+    with tempfile.TemporaryDirectory(dir=TMP) as control_dir:
+        if subprocess.run(["dpkg-deb", "-e", deb, control_dir], stdout=subprocess.DEVNULL,
+                          stderr=subprocess.DEVNULL).returncode != 0:
+            return links
+        script = os.path.join(control_dir, "postinst")
+        if not os.path.exists(script):
+            return links
+        with open(script, encoding="utf-8", errors="replace") as handle:
+            text = handle.read().replace("\\\n", " ")
+        for match in ALT_RE.finditer(text):
+            link, _name, target, rest = match.groups()
+            links.append((link, target))
+            for slave in SLAVE_RE.finditer(rest):
+                links.append((slave.group(1), slave.group(3)))
+    return links
+
+
+def inside_root(path):
+    return os.path.join(ROOT, path.lstrip("/"))
+
+
+def fix_links(files, alternatives):
+    """Point absolute links at the unpacked tree and recreate the
+    update-alternatives links, without ever shadowing a system file."""
+    added = []
+    for path in files:
+        local = inside_root(path)
+        if not os.path.islink(local):
+            continue
+        target = os.readlink(local)
+        if target.startswith("/") and not os.path.exists(target) and os.path.lexists(inside_root(target)):
+            os.unlink(local)
+            os.symlink(inside_root(target), local)
+    for link, target in alternatives:
+        if "$" in link or "$" in target or not link.startswith("/") or not target.startswith("/"):
+            continue
+        if os.path.lexists(link):
+            continue  # the system already provides this command or file
+        local_target = inside_root(target)
+        if not os.path.exists(local_target):
+            continue
+        local_link = inside_root(link)
+        if os.path.lexists(local_link):
+            continue
+        os.makedirs(os.path.dirname(local_link), exist_ok=True)
+        os.symlink(local_target, local_link)
+        added.append(link)
+    return added
+
+
+def fix_desktop_entries(files, launchers):
+    entries = []
+    for path in files:
+        if not (path.startswith("/usr/share/applications/") and path.endswith(".desktop")):
+            continue
+        local = inside_root(path)
+        if not os.path.isfile(local) or os.path.islink(local):
+            continue
+        with open(local, encoding="utf-8", errors="replace") as handle:
+            lines = handle.read().splitlines()
+        changed = False
+        name = ""
+        hidden = False
+        for i, line in enumerate(lines):
+            key, sep, value = line.partition("=")
+            if not sep:
+                continue
+            if key in ("Exec", "TryExec"):
+                parts = value.split(" ", 1)
+                program = parts[0]
+                if os.path.basename(program) in launchers:
+                    parts[0] = launchers[os.path.basename(program)]
+                    lines[i] = key + "=" + " ".join(parts)
+                    changed = True
+                elif program.startswith("/") and not os.path.exists(program) and os.path.exists(inside_root(program)):
+                    parts[0] = inside_root(program)
+                    lines[i] = key + "=" + " ".join(parts)
+                    changed = True
+            elif key == "Icon" and value.startswith("/") and not os.path.exists(value) \
+                    and os.path.exists(inside_root(value)):
+                lines[i] = "Icon=" + inside_root(value)
+                changed = True
+            elif key == "Name" and not name:
+                name = value
+            elif key == "NoDisplay" and value.strip().lower() == "true":
+                hidden = True
+        if changed:
+            with open(local, "w", encoding="utf-8") as handle:
+                handle.write("\n".join(lines) + "\n")
+        if name and not hidden:
+            entries.append(name)
+    return entries
+
+
+def link_python_modules():
+    dist = inside_root("/usr/lib/python3/dist-packages")
+    if not os.path.isdir(dist):
+        return
+    result = subprocess.run(["python3", "-c", "import site; print(site.getusersitepackages())"],
+                            stdout=subprocess.PIPE, text=True)
+    site_dir = result.stdout.strip()
+    if not site_dir:
+        return
+    os.makedirs(site_dir, exist_ok=True)
+    with open(os.path.join(site_dir, "userapt.pth"), "w") as handle:
+        handle.write(dist + "\n")
+
+
+def register_fonts():
+    fonts = inside_root("/usr/share/fonts")
+    conf_dir = os.path.join(HOME, ".config", "fontconfig", "conf.d")
+    conf = os.path.join(conf_dir, "50-userapt.conf")
+    if not os.path.isdir(fonts):
+        return
+    os.makedirs(conf_dir, exist_ok=True)
+    with open(conf, "w") as handle:
+        handle.write('<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n'
+                     f"<fontconfig><dir>{fonts}</dir></fontconfig>\n")
+    if shutil.which("fc-cache"):
+        subprocess.run(["fc-cache", "-f", fonts], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def compile_schemas():
+    user_schemas = inside_root("/usr/share/glib-2.0/schemas")
+    if not os.path.isdir(user_schemas):
+        return
+    compiler = shutil.which("glib-compile-schemas")
+    if not compiler:
+        return
+    target = os.path.join(HOME, ".local", "share", "glib-2.0", "schemas")
+    os.makedirs(target, exist_ok=True)
+    for old in glob.glob(os.path.join(target, "*")):
+        if old.endswith((".xml", ".override", ".compiled")):
+            os.unlink(old)
+    for source in ("/usr/share/glib-2.0/schemas", user_schemas):
+        for path in glob.glob(os.path.join(source, "*")):
+            if path.endswith((".xml", ".override")):
+                shutil.copy(path, target)
+    subprocess.run([compiler, target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def private_paths(files):
+    """Paths the program expects that the system lacks: the package's own
+    directories (/usr/share/NAME, /usr/lib/NAME, /etc/NAME, ...) and its
+    commands, so absolute references to them resolve under proot."""
+    paths = set()
+    for path in files:
+        if os.path.dirname(path) in ("/usr/bin", "/usr/games", "/usr/sbin", "/bin"):
+            continue
+        for prefix in BIND_PREFIXES:
+            if not path.startswith(prefix):
+                continue
+            top = path[len(prefix):].split("/", 1)[0]
+            candidate = prefix + top
+            if top and top not in SHARED_DIRS and os.path.isdir(inside_root(candidate)) \
+                    and not os.path.islink(inside_root(candidate)) and not os.path.lexists(candidate):
+                paths.add(candidate)
+            break
+    if paths:
+        for path in files:
+            if os.path.dirname(path) in ("/usr/bin", "/usr/games") and not os.path.lexists(path) \
+                    and os.path.isfile(inside_root(path)):
+                paths.add(path)
+    return sorted(paths)
+
+
+def all_binds():
+    paths = set()
+    try:
+        names = os.listdir(BINDS)
+    except OSError:
+        return []
+    for name in names:
+        try:
+            with open(os.path.join(BINDS, name), encoding="utf-8") as handle:
+                paths.update(line.strip() for line in handle if line.strip())
+        except OSError:
+            pass
+    return sorted(path for path in paths if os.path.lexists(inside_root(path)) and not os.path.lexists(path))
+
+
+def write_launchers(name, commands, binds):
+    """Launchers for the commands of a package with private paths."""
+    os.makedirs(BINDS, exist_ok=True)
+    created = {}
+    if not binds:
+        return created
+    with open(os.path.join(BINDS, name), "w", encoding="utf-8") as handle:
+        handle.write("\n".join(binds) + "\n")
+    os.makedirs(LAUNCHERS, exist_ok=True)
+    for command in commands:
+        target = None
+        for directory in ("/usr/bin", "/usr/games", "/bin", "/usr/sbin"):
+            if os.path.exists(inside_root(os.path.join(directory, command))):
+                target = inside_root(os.path.join(directory, command))
+                break
+        if not target:
+            continue
+        launcher = os.path.join(LAUNCHERS, command)
+        if os.path.exists(launcher):
+            with open(launcher, encoding="utf-8", errors="replace") as handle:
+                if LAUNCHER_MARK not in handle.read(200):
+                    continue  # the bot's own file; leave it
+        with open(launcher, "w", encoding="utf-8") as handle:
+            handle.write(f"#!/bin/sh\n{LAUNCHER_MARK} for {name}: maps its data paths, see `userapt --help`\n"
+                         f'exec userapt run "{target}" "$@"\n')
+        os.chmod(launcher, 0o755)
+        created[command] = launcher
+    with open(os.path.join(INFO, name + ".launchers"), "w", encoding="utf-8") as handle:
+        handle.write("\n".join(created.values()) + "\n")
+    return created
+
+
+def remove_launchers(name):
+    try:
+        with open(os.path.join(INFO, name + ".launchers"), encoding="utf-8") as handle:
+            paths = [line.strip() for line in handle if line.strip()]
+    except OSError:
+        paths = []
+    for path in paths:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                mine = LAUNCHER_MARK in handle.read(200)
+            if mine:
+                os.unlink(path)
+        except OSError:
+            pass
+    for path in (os.path.join(INFO, name + ".launchers"), os.path.join(BINDS, name)):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def cmd_run(argv):
+    """Run a program with the private paths of unpacked packages mapped."""
+    if not argv:
+        fail("usage: userapt run PROGRAM [ARGS...]")
+    binds = all_binds()
+    proot = shutil.which("proot")
+    if not binds or not proot:
+        os.execvp(argv[0], argv)
+    args = [proot]
+    for path in binds:
+        args += ["-b", inside_root(path) + ":" + path]
+    os.execv(proot, args + argv)
+
+
+def executables(files):
+    found = []
+    for path in files:
+        directory = os.path.dirname(path)
+        if directory in ("/usr/bin", "/bin", "/usr/games", "/usr/sbin", "/sbin"):
+            local = inside_root(path)
+            if os.path.exists(local) and os.access(local, os.X_OK) and not os.path.isdir(local):
+                found.append(os.path.basename(path))
+    return found
+
+
+def cmd_install(names):
+    if not names:
+        fail("usage: userapt install PKG...")
+    update()
+    installs, removes = simulate(names)
+    system = system_packages()
+    mine = user_packages()
+    blocked = [name for name in removes if name in system]
+    if blocked:
+        fail("installing this would remove system packages (" + ", ".join(blocked) +
+             "), which userapt cannot do. Try another package.")
+    plan, skipped = [], []
+    for name, old, new, arch in installs:
+        if old and name in system and name not in mine:
+            skipped.append(f"{name} (system has {old}, wants {new})")
+            continue
+        plan.append((name, new, arch))
+    if not plan:
+        say("Nothing to install: " + ", ".join(names) + " is already available.")
+        if skipped:
+            say("Not unpacked (would replace a system package): " + "; ".join(skipped))
+        return
+    say(f"Downloading {len(plan)} package(s): " + " ".join(name for name, _, _ in plan))
+    with tempfile.TemporaryDirectory(dir=CACHE) as work:
+        specs = [f"{name}:{arch}={version}" if arch and arch != "all" else f"{name}={version}"
+                 for name, version, arch in plan]
+        result = subprocess.run(["apt-get", "-q", "download"] + specs, cwd=work,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if result.returncode != 0:
+            fail("download failed:\n" + (result.stderr or result.stdout).strip()[-3000:])
+        debs = sorted(glob.glob(os.path.join(work, "*.deb")))
+        if len(debs) < len(plan):
+            fail(f"expected {len(plan)} packages but downloaded {len(debs)}")
+        commands, entries, launched = [], [], []
+        for deb in debs:
+            control = deb_control(deb)
+            name = stanza_field(control, "Package")
+            files = deb_files(deb)
+            old_files = set()
+            if name in mine:
+                old_files = set(read_file_list(name))
+            run(["dpkg-deb", "-x", deb, ROOT])
+            added = fix_links(files, maintainer_alternatives(deb))
+            package_commands = executables(files) + [
+                os.path.basename(link) for link in added if os.path.dirname(link) in ("/usr/bin", "/bin", "/usr/games")]
+            remove_launchers(name)
+            launchers = write_launchers(name, package_commands, private_paths(files))
+            launched += list(launchers)
+            entries += fix_desktop_entries(files, launchers)
+            commands += package_commands
+            owned = files + [link for link in added if link not in files]
+            for stale in sorted(old_files - set(owned), key=len, reverse=True):
+                remove_path(inside_root(stale))
+            with open(os.path.join(INFO, name + ".list"), "w", encoding="utf-8") as handle:
+                handle.write("\n".join(owned) + "\n")
+            mine[name] = record_stanza(control)
+            say(f"  unpacked {name} {stanza_field(control, 'Version')}")
+    save_user_packages(mine)
+    link_python_modules()
+    register_fonts()
+    compile_schemas()
+    say("Done. Installed under " + ROOT)
+    if commands:
+        say("Commands: " + ", ".join(sorted(set(commands))))
+    if launched:
+        say("Started through a launcher that maps their data paths (proot): " + ", ".join(sorted(set(launched))))
+    if entries:
+        say("Desktop apps (menu entries): " + ", ".join(sorted(set(entries))))
+    if skipped:
+        say("Warning: not unpacked because the image has an older version of these system packages; "
+            "the program may still work: " + "; ".join(skipped))
+    say("GUI programs: start them with the desktop_launch tool (or `setsid PROGRAM >/dev/null 2>&1 &`).")
+
+
+def read_file_list(name):
+    try:
+        with open(os.path.join(INFO, name + ".list"), encoding="utf-8") as handle:
+            return [line.strip() for line in handle if line.strip()]
+    except FileNotFoundError:
+        return []
+
+
+def remove_path(local):
+    try:
+        if os.path.islink(local) or os.path.isfile(local):
+            os.unlink(local)
+        elif os.path.isdir(local):
+            os.rmdir(local)  # only when empty
+    except OSError:
+        pass
+
+
+def cmd_remove(names):
+    if not names:
+        fail("usage: userapt remove PKG...")
+    mine = user_packages()
+    missing = [name for name in names if name not in mine]
+    if missing:
+        fail("not installed by userapt: " + ", ".join(missing))
+    for name in names:
+        for path in sorted(read_file_list(name), key=len, reverse=True):
+            remove_path(inside_root(path))
+        try:
+            os.unlink(os.path.join(INFO, name + ".list"))
+        except FileNotFoundError:
+            pass
+        remove_launchers(name)
+        del mine[name]
+        say("removed " + name)
+    save_user_packages(mine)
+    compile_schemas()
+
+
+def cmd_list():
+    mine = user_packages()
+    if not mine:
+        say("No packages installed with userapt.")
+        return
+    for name in sorted(mine):
+        say(f"{name} {stanza_field(mine[name], 'Version')}")
+
+
+def cmd_search(words):
+    if not words:
+        fail("usage: userapt search WORD...")
+    update()
+    result = run(["apt-cache", "search"] + words, check=False)
+    lines = result.stdout.splitlines()
+    for line in lines[:60]:
+        say(line)
+    if len(lines) > 60:
+        say(f"... {len(lines) - 60} more; refine the search words")
+    if not lines:
+        say("No packages found.")
+
+
+def cmd_show(names):
+    if not names:
+        fail("usage: userapt show PKG")
+    update()
+    result = run(["apt-cache", "show", "--no-all-versions"] + names, check=False)
+    say((result.stdout or result.stderr).strip())
+
+
+def cmd_files(names):
+    for name in names:
+        files = read_file_list(name)
+        if not files:
+            fail(name + " is not installed by userapt")
+        for path in files:
+            say(inside_root(path))
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        say(__doc__.strip())
+        return 0
+    if argv[0] == "run":
+        cmd_run(argv[1:])
+        return 0
+    if os.getuid() == 0:
+        say("Note: running as root; userapt still installs into " + ROOT)
+    ensure_dirs()
+    write_conf()
+    lock = open(os.path.join(STATE, "lock"), "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        say("Waiting for another userapt to finish ...")
+        fcntl.flock(lock, fcntl.LOCK_EX)
+    write_combined_status()
+    command, args = argv[0], argv[1:]
+    if command == "install":
+        cmd_install([a for a in args if not a.startswith("-")])
+    elif command in ("remove", "purge", "uninstall"):
+        cmd_remove([a for a in args if not a.startswith("-")])
+    elif command == "list":
+        cmd_list()
+    elif command == "search":
+        cmd_search(args)
+    elif command == "show":
+        cmd_show(args)
+    elif command == "files":
+        cmd_files(args)
+    elif command == "update":
+        update(force=True)
+        say("Package lists are up to date.")
+    else:
+        fail(f"unknown command {command!r}; see `userapt --help`", 2)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -21,6 +21,11 @@ const (
 	memoryTidyEvery     = 24 * time.Hour
 	memoryReviewTimeout = 10 * time.Minute
 	memoryReviewTokens  = 800
+	// One maintenance pass re-embeds at most this many memories within this
+	// time; a self-hosted E5 takes ~50 ms per memory, so a backlog of a few
+	// thousand rows clears within minutes without starving recall.
+	memoryReembedRows   = 500
+	memoryReembedBudget = 45 * time.Second
 )
 
 // memoryMaintenance is the per-engine state of the background memory pass.
@@ -30,6 +35,9 @@ type memoryMaintenance struct {
 	lastReview time.Time
 	lastTidy   time.Time
 	reviewer   *memory.Reviewer
+	// embeddingDown remembers that the last re-embed pass hit an outage, so
+	// the outage is logged once.
+	embeddingDown bool
 }
 
 // Keyed by engine rather than stored on it so this feature stays out of the
@@ -74,6 +82,7 @@ func (e *Engine) reviewMemories(ctx context.Context) {
 		}()
 		runCtx, cancel := context.WithTimeout(ctx, memoryReviewTimeout)
 		defer cancel()
+		e.reembedMemories(runCtx, state)
 		if reviewed, err := reviewer.ReviewDue(runCtx); err != nil {
 			if runCtx.Err() == nil {
 				e.logger.Warn("memory review failed", "error", err)
@@ -93,6 +102,34 @@ func (e *Engine) reviewMemories(ctx context.Context) {
 				"scope_type", report.ScopeType, "scope_id", report.ScopeID, "archived", len(report.Archived))
 		}
 	}()
+}
+
+// reembedMemories gives memories without a current vector one: rows saved
+// while the embedding service was down, rows edited since, and rows from an
+// older embedding space. While the service is down the circuit breaker
+// spaces out the attempts (30 s doubling to 10 min) and a pass costs nothing.
+func (e *Engine) reembedMemories(ctx context.Context, state *memoryMaintenance) {
+	if err := e.memory.WarmCalibration(ctx); err != nil && ctx.Err() == nil && !errors.Is(err, memory.ErrEmbeddingUnavailable) {
+		e.logger.Warn("memory recall calibration failed", "error", err)
+	}
+	report, err := e.memory.ReembedPending(ctx, memoryReembedRows, memoryReembedBudget)
+	state.mu.Lock()
+	wasDown := state.embeddingDown
+	state.embeddingDown = err != nil && ctx.Err() == nil
+	state.mu.Unlock()
+	switch {
+	case err != nil && ctx.Err() == nil:
+		// Logged when the outage starts, not on every pass.
+		if !wasDown {
+			e.logger.Warn("memory re-embed paused: embedding service unavailable", "error", err)
+		}
+	case wasDown && err == nil:
+		e.logger.Info("memory re-embed resumed")
+	}
+	if report.Embedded > 0 || report.Skipped > 0 {
+		e.logger.Info("re-embedded memories", "count", report.Embedded, "skipped", report.Skipped,
+			"remaining", report.Remaining, "space", e.memory.ModelName())
+	}
 }
 
 // memoryExtractor runs the review prompt on the bot's own provider and model

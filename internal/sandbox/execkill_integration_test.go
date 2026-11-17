@@ -31,7 +31,7 @@ func startKillTarget(t *testing.T) (*Manager, string) {
 	if image == "" {
 		image = "superbot/computer:latest"
 	}
-	name := "superbot-killtest-" + uuid.NewString()[:8]
+	name := "sbtest-killtest-" + uuid.NewString()[:8]
 	ctx := context.Background()
 	created, err := cli.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Name: name,

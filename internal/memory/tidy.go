@@ -11,9 +11,8 @@ import (
 )
 
 const (
-	// tidySimilarity is stricter than the write-time duplicate threshold
-	// because Tidy acts without anyone watching.
-	tidySimilarity  = 0.95
+	// The near-duplicate threshold is the space's TidyMin: Tidy acts without
+	// anyone watching, so it is at least as strict as the write-time merge.
 	tidyMaxFraction = 0.2
 	// TidyMinRows is the scope size above which the scheduled tidy bothers.
 	TidyMinRows   = 20
@@ -115,6 +114,16 @@ func vectorSimilarity(a, b tidyRow) float64 {
 	return dot
 }
 
+// tidySimilarityOf is the vector similarity of two rows, except that rows
+// mentioning different numbers are never near duplicates ("端口 2222" vs
+// "端口 2200" embed almost identically).
+func tidySimilarityOf(a, b tidyRow) float64 {
+	if !sameNumbers(a.Content, b.Content) {
+		return 0
+	}
+	return vectorSimilarity(a, b)
+}
+
 func tidyRows(items []store.Memory) []tidyRow {
 	rows := make([]tidyRow, 0, len(items))
 	for _, item := range items {
@@ -142,7 +151,7 @@ func (s *Service) Tidy(ctx context.Context, ownerID uuid.UUID, scopeType string,
 		return report, err
 	}
 	report.Scanned = len(items)
-	plan := planTidy(tidyRows(items), vectorSimilarity, tidySimilarity, tidyMaxFraction)
+	plan := planTidy(tidyRows(items), tidySimilarityOf, s.space.TidyMin, tidyMaxFraction)
 	if len(plan) == 0 {
 		return report, nil
 	}

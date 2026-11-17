@@ -19,6 +19,10 @@ type Result struct {
 	// WidgetHTML carries an MCP App UI resource. It is rendered in a sandboxed
 	// iframe by the client and never enters the model context.
 	WidgetHTML string
+	// Images are pictures the tool took (a desktop screenshot). The engine
+	// shows them to models that accept images and drops them for the rest;
+	// Content must therefore stand on its own.
+	Images []llm.Image
 }
 
 type Tool interface {

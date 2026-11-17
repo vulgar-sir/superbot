@@ -2,7 +2,12 @@ package browser
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,10 +39,17 @@ func NewSession(ctx context.Context, manager *sandbox.Manager, ownerID, botID uu
 	if info.CDPAddr == "" {
 		return nil, fmt.Errorf("computer did not publish a CDP address")
 	}
+	wsURL, err := browserWebSocketURL(ctx, info)
+	if err != nil {
+		return nil, err
+	}
 	// The session outlives the cycle that created it: approvals resume a run
 	// in a new cycle, and the page must keep its URL, DOM and element refs.
 	base := context.WithoutCancel(ctx)
-	allocCtx, allocCancel := remote.NewAllocator(base, "http://"+info.CDPAddr)
+	// Every connection to the computer's DevTools carries its gate secret,
+	// so chromedp gets the full WebSocket address instead of discovering it.
+	allocCtx, allocCancel := remote.NewAllocator(base, wsURL, remote.NoModifyURL,
+		remote.WithDialHTTPHeader(info.GateHeaders()))
 	taskCtx, taskCancel := chromedp.NewContext(allocCtx)
 	// The first Run binds the browser's lifetime to taskCtx. Do not wrap this
 	// call in a short timeout.
@@ -77,3 +89,42 @@ func (s *Session) runCtx(timeout time.Duration) (context.Context, context.Cancel
 }
 
 func (s *Session) WorkspacePath() string { return s.info.Workspace }
+
+// browserWebSocketURL asks the computer's DevTools endpoint (through its
+// gate) for the browser's WebSocket address and points it at the computer.
+func browserWebSocketURL(ctx context.Context, info sandbox.Info) (string, error) {
+	reqCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, "http://"+info.CDPAddr+"/json/version", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header = info.GateHeaders()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("reach the browser: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("browser endpoint answered %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return rewriteWebSocketHost(body, info.CDPAddr)
+}
+
+// rewriteWebSocketHost takes webSocketDebuggerUrl from a /json/version reply
+// and replaces its loopback host with addr.
+func rewriteWebSocketHost(body []byte, addr string) (string, error) {
+	var version struct {
+		WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
+	}
+	if err := json.Unmarshal(body, &version); err != nil || version.WebSocketDebuggerURL == "" {
+		return "", fmt.Errorf("browser endpoint did not report a WebSocket address")
+	}
+	parsed, err := url.Parse(version.WebSocketDebuggerURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid WebSocket address: %w", err)
+	}
+	parsed.Host = addr
+	return parsed.String(), nil
+}

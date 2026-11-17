@@ -96,9 +96,13 @@ services:
       - ../data:/srv/superbot/data
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # The default network carries the API's own traffic (gw_priority): the
+    # sandbox network is only for reaching bot computers, and the host
+    # firewall (deploy/sandbox-firewall.sh) treats it as untrusted.
     networks:
-      - default
-      - superbot_sandbox
+      default:
+        gw_priority: 100
+      superbot_sandbox: {}
 
   worker:
     image: superbot/api:latest
@@ -122,9 +126,10 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
-      - default
-      - superbot_sandbox
-      - superbot_docker
+      default:
+        gw_priority: 100
+      superbot_sandbox: {}
+      superbot_docker: {}
 
   docker-proxy:
     # Allowlisting Docker Engine proxy (internal/dockerproxy): permits only

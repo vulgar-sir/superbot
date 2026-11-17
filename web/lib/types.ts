@@ -290,9 +290,28 @@ export interface Memory {
   content: string;
   scope_type: string;
   created_at: string;
+  updated_at?: string;
   source?: "manual" | "tool" | "review" | "import" | "tidy";
   pinned?: boolean;
   archived_at?: string | null;
+  // Set on an archived memory a newer one replaced.
+  superseded_by?: string | null;
+  // No search vector yet (embedding service was down); indexed in the background.
+  pending?: boolean;
+}
+
+// Result of saving one memory by hand.
+export interface MemoryCreateResult {
+  memory: Memory;
+  // The content matched an existing memory, which was refreshed instead.
+  duplicate?: boolean;
+  // Stored, but not searchable by meaning until the background indexing runs.
+  pending?: boolean;
+  // Older memories retired because the new one replaces them.
+  superseded?: Memory[];
+  // Similar memories left as they were; the user may retire outdated ones.
+  related?: Memory[];
+  pinned_conflicts?: Memory[];
 }
 
 export interface MemoryImportResult {
@@ -603,6 +622,9 @@ export interface StreamState {
   botId: string;
   text: string;
   reasoning: string;
+  // How far into the conversation the bot had read when this reply started
+  // (or since): later user messages are shown below it.
+  seen: number;
 }
 
 export interface ToolActivity {

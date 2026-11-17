@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -86,6 +87,7 @@ func (e *Engine) pauseForApproval(
 		"run_id":          run.ID.String(),
 		"call_id":         call.ID,
 		"name":            call.Name,
+		"tool_name":       call.Name,
 		"arguments":       maskedArgs,
 	})
 	return nil
@@ -140,6 +142,7 @@ func (e *Engine) resumeFromCheckpoint(ctx context.Context, conv store.Conversati
 		PendingCalls:     calls,
 		ApprovalDecision: decision,
 		Continuation:     continuation,
+		PriorRunID:       &checkpoint.RunID,
 	})
 	if err != nil {
 		if errors.Is(err, errApprovalPending) {
@@ -161,4 +164,38 @@ func (e *Engine) resumeFromCheckpoint(ctx context.Context, conv store.Conversati
 		return e.continueTeam(ctx, conv, cycle, leaseID, bot, outcome)
 	}
 	return outcome, nil
+}
+
+// pausedRunCarry returns what a run that paused for approval had already
+// written, and the chain of paused runs the reply has passed through so far
+// (that run last). A resumed run streams its predecessor's text first, so
+// the latest run's text already holds every earlier one's.
+func (e *Engine) pausedRunCarry(ctx context.Context, runID uuid.UUID) (string, []string) {
+	var chain []string
+	rows, err := e.db.ListRunEvents(ctx, &runID)
+	if err != nil {
+		e.logger.Warn("load paused run events failed", "run_id", runID, "error", err)
+		return "", []string{runID.String()}
+	}
+	var text strings.Builder
+	for _, row := range rows {
+		switch row.Type {
+		case events.TypeTextDelta:
+			var payload struct {
+				Text string `json:"text"`
+			}
+			if json.Unmarshal(row.Payload, &payload) == nil {
+				text.WriteString(payload.Text)
+			}
+		case events.TypeStatus:
+			var payload struct {
+				ResumedFrom []string `json:"resumed_from"`
+			}
+			if json.Unmarshal(row.Payload, &payload) == nil && len(payload.ResumedFrom) > 0 {
+				chain = payload.ResumedFrom
+			}
+		}
+	}
+	chain = append(append([]string(nil), chain...), runID.String())
+	return llm.StripArtifacts(strings.TrimSpace(text.String())), chain
 }

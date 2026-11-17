@@ -188,6 +188,41 @@ func (q *Queries) ListComputerSnapshots(ctx context.Context, arg ListComputerSna
 	return items, nil
 }
 
+const listIdleRunningWorkspaces = `-- name: ListIdleRunningWorkspaces :many
+SELECT w.bot_id, w.owner_id
+FROM workspaces w
+JOIN bots b ON b.id = w.bot_id
+WHERE w.desired_state = 'running'
+  AND w.status = 'running'
+  AND COALESCE(w.last_used_at, b.last_activity_at, b.updated_at) < now() - $1::text::interval
+`
+
+type ListIdleRunningWorkspacesRow struct {
+	BotID   uuid.UUID `json:"bot_id"`
+	OwnerID uuid.UUID `json:"owner_id"`
+}
+
+// The running computers StopIdleWorkspaces would put to sleep now.
+func (q *Queries) ListIdleRunningWorkspaces(ctx context.Context, idle string) ([]ListIdleRunningWorkspacesRow, error) {
+	rows, err := q.db.Query(ctx, listIdleRunningWorkspaces, idle)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListIdleRunningWorkspacesRow{}
+	for rows.Next() {
+		var i ListIdleRunningWorkspacesRow
+		if err := rows.Scan(&i.BotID, &i.OwnerID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRunningWorkspaces = `-- name: ListRunningWorkspaces :many
 SELECT bot_id, owner_id, COALESCE(last_used_at, updated_at)::timestamptz AS last_used
 FROM workspaces
@@ -446,6 +481,15 @@ func (q *Queries) StopIdleWorkspaces(ctx context.Context, idle string) (int64, e
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const touchWorkspaceUsed = `-- name: TouchWorkspaceUsed :exec
+UPDATE workspaces SET last_used_at = now() WHERE bot_id = $1
+`
+
+func (q *Queries) TouchWorkspaceUsed(ctx context.Context, botID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, touchWorkspaceUsed, botID)
+	return err
 }
 
 const upsertWorkspaceRunning = `-- name: UpsertWorkspaceRunning :one

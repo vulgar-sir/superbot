@@ -20,7 +20,7 @@ const (
 // execWrapperScript runs a command as the leader of its own process group
 // and records the group id and its own start time, so a cancelled exec can be
 // found and killed as a whole. Invoked as: sh -c SCRIPT <marker> <timeout> cmd...
-const execWrapperScript = `d=` + execStateDir + `; mkdir -p "$d" 2>/dev/null
+const execWrapperScript = `d=` + execStateDir + `; mkdir -p "$d" "${HOME:-/tmp}" 2>/dev/null
 echo "$$ $(cut -d' ' -f22 /proc/$$/stat)" > "$d/$0" 2>/dev/null
 timeout "$@"; rc=$?
 rm -f "$d/$0"
@@ -32,12 +32,17 @@ exit $rc`
 // did, which catches processes that left the group and cleared their
 // environment. It scans twice to catch children forked during the first
 // pass. The marker reaches the script as an argument, so the script and its
-// helpers never match.
+// helpers never match. Background job runners (jobs.py) are orphans too, but
+// were started on purpose and are never touched.
 const execKillScript = `mark=$1
 f=` + execStateDir + `/${mark#*=}
 pgid=; since=
 [ -f "$f" ] && read pgid since < "$f"
 [ -n "$pgid" ] && /bin/kill -s KILL -- "-$pgid" 2>/dev/null
+jobs=" "
+for j in /tmp/.sbjobs/*; do
+  [ -f "$j" ] && read jp _ < "$j" && jobs="$jobs$jp "
+done
 for pass in 1 2; do
   for d in /proc/[0-9]*; do
     pid=${d#/proc/}
@@ -48,6 +53,7 @@ for pass in 1 2; do
       continue
     fi
     [ -n "$since" ] || continue
+    case "$jobs" in *" $pid "*) continue ;; esac
     stat=$(cat "$d/stat" 2>/dev/null) || continue
     rest=${stat##*) }
     set -- $rest

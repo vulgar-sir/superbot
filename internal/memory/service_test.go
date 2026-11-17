@@ -41,7 +41,7 @@ func TestRemoteEmbedding(t *testing.T) {
 		var payload embeddingRequest
 		_ = json.NewDecoder(r.Body).Decode(&payload)
 		sawModel = payload.Model
-		sawInput = payload.Input
+		sawInput, _ = payload.Input.(string)
 		vector := make([]float32, dims)
 		for i := range vector {
 			vector[i] = float32(i%7) + 1

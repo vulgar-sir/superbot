@@ -16,6 +16,10 @@ func TestDesktopToolsRegistered(t *testing.T) {
 		"desktop_scroll":        false,
 		"desktop_list_windows":  false,
 		"desktop_window_action": false,
+		"desktop_read_screen":   false,
+		"desktop_drag":          false,
+		"desktop_move":          false,
+		"desktop_launch":        false,
 	}
 	for _, item := range items {
 		if _, ok := want[item.Name()]; ok {

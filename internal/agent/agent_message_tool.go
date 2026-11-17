@@ -24,6 +24,8 @@ type agentMessageTool struct {
 	// hop is how many bot-to-bot messages led to the current turn without a
 	// human in between.
 	hop int
+	// roomMembers are the bots of the group chat this turn runs in, if any.
+	roomMembers map[uuid.UUID]string
 }
 
 func (t *agentMessageTool) Name() string { return "send_to_agent" }
@@ -57,6 +59,15 @@ func (t *agentMessageTool) Execute(ctx context.Context, args json.RawMessage) (t
 	}
 	if recipient.ID == t.senderID {
 		return tools.Result{Content: "不能给自己发私信。", IsError: true}, nil
+	}
+	if name, inRoom := t.roomMembers[recipient.ID]; inRoom {
+		// A private message to someone in the same group splits the work
+		// across two places: the teammate answers the @ in the group and the
+		// private message as well, and the user sees only half of it.
+		return tools.Result{
+			Content: fmt.Sprintf("%s 就在这个群聊里，不要私信群成员。需要它接手时，直接在你的回复里写 @%s 并说明要它做什么，它会在群里接着发言。", name, name),
+			IsError: true,
+		}, nil
 	}
 	result, err := t.chat.Send(ctx, t.ownerID, t.senderID, recipient.ID, &t.originConv, input.Message, t.hop)
 	if errors.Is(err, agentchat.ErrTooManyHops) {

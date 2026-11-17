@@ -16,7 +16,8 @@
 
 - 已部署 `embedding` 服务：`deploy/images/embedding`（fastembed 0.9.1 + `intfloat/multilingual-e5-large`，1024 维），模型首次启动从 `hf-mirror.com` 下载并缓存在 `superbot_embedding_models` 卷；`HF_HUB_DISABLE_XET=1` 避免镜像的 Xet CAS 下载卡住
 - 配置：`SUPERBOT_EMBEDDING_BASE_URL=http://embedding:8090`、`SUPERBOT_EMBEDDING_MODEL=intfloat/multilingual-e5-large`、任意非空 `SUPERBOT_EMBEDDING_API_KEY`（服务不校验值）
-- 切换后执行：`docker exec superbot-api-1 /app/superbot reembed-memory`
+- 切换模型后 worker 会在后台自动把旧向量重新嵌入（每分钟最多约 500 条，嵌入服务不可用时自动退避）；想立即完成可执行：`docker exec superbot-api-1 /app/superbot reembed-memory`
+- E5 系列模型按要求加 `query: ` / `passage: ` 前缀，向量记为 `remote:<模型>@e5-prefix-v1`；召回阈值按查询校准，可用 `docker exec superbot-api-1 /app/superbot memory-eval` 在真实嵌入服务上复测（打印分数分布与准确率/召回率，低于基线时退出码非 0）
 - 验收（2026-11-13 已通过）：服务 `/healthz` dim=1024；6 条记忆迁到 `remote:intfloat/multilingual-e5-large`；查询「部署包放在哪个文件夹」最近邻命中「交付物保存在 /srv/releases 目录」0.8816，高于无关记忆；`/api/capabilities` 的 `memory_semantic` = available
 - 外部 OpenAI 兼容 embedding 仍可作为替代：设置对应 Base URL/Key/Model 后重新 reembed
 

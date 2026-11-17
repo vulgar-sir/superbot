@@ -117,6 +117,9 @@ func (m *Manager) makeRoom(ctx context.Context, botID uuid.UUID) {
 		if time.Since(ws.LastUsed) < evictIdleAfter {
 			break // sorted oldest first: the rest are busier still
 		}
+		if m.busyWithJobs(ctx, ws.BotID) {
+			continue // a background job is working
+		}
 		unlock := m.botLocks.Lock(ws.BotID)
 		err := m.Stop(ctx, ws.BotID)
 		unlock()

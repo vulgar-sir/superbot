@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -84,14 +85,17 @@ func run() error {
 		return runWorker(ctx, cfg, logger)
 	case "reembed-memory":
 		return runReembedMemory(ctx, cfg, logger)
+	case "memory-eval":
+		return runMemoryEval(ctx, cfg, args[1:])
 	default:
-		return fmt.Errorf("unknown command %q (want serve, worker, migrate, docker-proxy or genkey)", command)
+		return fmt.Errorf("unknown command %q (want serve, worker, migrate, docker-proxy, genkey, reembed-memory or memory-eval)", command)
 	}
 }
 
 // runReembedMemory moves stored memory vectors into the configured embedding
-// provider's vector space. Rows keep their old embedding_model until they are
-// re-embedded, and recall only compares vectors from one space.
+// space right away. The worker does the same in the background, a few hundred
+// rows a minute; this is for doing it in one go. Rows keep their old space
+// until they are re-embedded, and recall only compares vectors of one space.
 func runReembedMemory(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if strings.TrimSpace(cfg.EmbeddingAPIKey) == "" {
 		return errors.New("SUPERBOT_EMBEDDING_API_KEY is required to re-embed memories")
@@ -105,33 +109,59 @@ func runReembedMemory(ctx context.Context, cfg config.Config, logger *slog.Logge
 	}
 	defer db.Close()
 	service := memory.NewService(db, cfg.EmbeddingAPIKey, cfg.EmbeddingBaseURL, cfg.EmbeddingModel)
-	target := service.ModelName()
 	total := 0
 	for {
-		rows, err := db.ListMemoriesNeedingReembed(ctx, store.ListMemoriesNeedingReembedParams{
-			EmbeddingModel: target, MaxRows: 100,
-		})
+		report, err := service.ReembedPending(ctx, 1000, 0)
+		total += report.Embedded
+		if err != nil {
+			return fmt.Errorf("re-embed memories (%d done): %w", total, err)
+		}
+		logger.Info("re-embedded memories", "count", total, "skipped", report.Skipped,
+			"remaining", report.Remaining, "space", service.ModelName())
+		if report.Remaining == 0 || report.Embedded == 0 {
+			break
+		}
+	}
+	logger.Info("memory re-embed complete", "count", total, "space", service.ModelName())
+	return nil
+}
+
+// runMemoryEval embeds the bundled recall evaluation set with the configured
+// embedding service and prints score distributions, precision and recall.
+// It fails when a measured space falls below its floor; -record FILE writes
+// the scores for internal/memory/testdata.
+func runMemoryEval(ctx context.Context, cfg config.Config, args []string) error {
+	if strings.TrimSpace(cfg.EmbeddingAPIKey) == "" {
+		fmt.Println("no embedding service configured: evaluating the built-in local hash")
+	}
+	service := memory.NewService(nil, cfg.EmbeddingAPIKey, cfg.EmbeddingBaseURL, cfg.EmbeddingModel)
+	if err := service.WarmCalibration(ctx); err != nil {
+		return fmt.Errorf("load calibration passages: %w", err)
+	}
+	report, scores, err := service.RunEval(ctx)
+	if err != nil {
+		return err
+	}
+	fmt.Print(report)
+	if len(args) == 2 && args[0] == "-record" {
+		raw, err := json.MarshalIndent(scores, "", " ")
 		if err != nil {
 			return err
 		}
-		if len(rows) == 0 {
-			break
+		if err := os.WriteFile(args[1], append(raw, '\n'), 0o644); err != nil {
+			return err
 		}
-		for _, row := range rows {
-			vector, err := service.EmbedText(ctx, row.Content)
-			if err != nil {
-				return fmt.Errorf("re-embed memory %s: %w", row.ID, err)
-			}
-			if err := db.SetMemoryEmbedding(ctx, store.SetMemoryEmbeddingParams{
-				ID: row.ID, OwnerID: row.OwnerID, Embedding: vector, EmbeddingModel: target,
-			}); err != nil {
-				return err
-			}
-			total++
-		}
-		logger.Info("re-embedded memories", "count", total, "model", target)
+		fmt.Println("scores written to", args[1])
 	}
-	logger.Info("memory re-embed complete", "count", total, "model", target)
+	floor, ok := memory.EvalFloorFor(service.ModelName())
+	if !ok {
+		fmt.Println("no quality floor is recorded for this embedding space")
+		return nil
+	}
+	if problems := floor.Check(report); len(problems) > 0 {
+		return fmt.Errorf("memory recall quality below the floor: %s", strings.Join(problems, "; "))
+	}
+	fmt.Println("quality floor met")
 	return nil
 }
 

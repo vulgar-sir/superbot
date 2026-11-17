@@ -28,6 +28,9 @@ export function BotMemory({ bot }: { bot: Bot }) {
   const [tidying, setTidying] = useState(false);
   // Result line of the last tidy / import / de-duplicated save.
   const [notice, setNotice] = useState<string | null>(null);
+  // Similar older memories found when the last one was added by hand; the
+  // user can retire the ones the new memory makes outdated.
+  const [related, setRelated] = useState<{ newId: string; items: Memory[] } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -52,7 +55,31 @@ export function BotMemory({ bot }: { bot: Bot }) {
   useEffect(() => {
     setNotice(null);
     setError(null);
+    setRelated(null);
   }, [bot.id, scope]);
+
+  const retireRelated = useCallback(
+    async (memory: Memory, supersededBy: string) => {
+      setBusyID(memory.id);
+      try {
+        const result = await api.archiveUserMemory(memory.id, supersededBy);
+        setMemories((prev) =>
+          showArchived
+            ? prev.map((item) => (item.id === memory.id ? result.memory : item))
+            : prev.filter((item) => item.id !== memory.id),
+        );
+        setRelated((prev) =>
+          prev ? { ...prev, items: prev.items.filter((item) => item.id !== memory.id) } : prev,
+        );
+        toast(t("memory.retired"), "success");
+      } catch (err) {
+        toast(err instanceof ApiError ? err.message : t("memory.retireFailed"), "danger");
+      } finally {
+        setBusyID(null);
+      }
+    },
+    [showArchived, t, toast],
+  );
 
   // "Imported 3 · 1 already known · 1 refused as a secret"
   const importSummary = useCallback(
@@ -238,7 +265,7 @@ export function BotMemory({ bot }: { bot: Bot }) {
             新增我的记忆
           </div>
           <p className="mt-1 text-[12px] leading-[18px] text-[var(--sb-text-2)]">
-            用户级记忆会在这个账户的所有 Bot 中召回，适合长期偏好与个人信息。
+            用户级记忆只属于你：你和这个账户的任何 Bot 对话时（包括群聊）都会召回，适合长期偏好与个人信息。
           </p>
           <textarea
             value={content}
@@ -290,12 +317,26 @@ export function BotMemory({ bot }: { bot: Bot }) {
                   const created = await api.createUserMemory(content.trim());
                   mergeSaved(created.memory);
                   setContent("");
+                  const retired = created.superseded?.length ?? 0;
+                  if (retired > 0) {
+                    const ids = new Set(created.superseded?.map((item) => item.id));
+                    setMemories((prev) => prev.filter((item) => !ids.has(item.id)));
+                  }
                   if (created.duplicate) {
                     // Nothing new was stored: say so instead of "added".
                     setNotice(t("memory.duplicate"));
+                  } else if (created.pending) {
+                    // Stored, but not searchable by meaning yet.
+                    setNotice(t("memory.savedPending"));
+                  } else if (retired > 0) {
+                    setNotice(t("memory.supersededCount", { n: retired }));
                   } else {
                     toast("记忆已添加", "success");
                   }
+                  const candidates = (created.related ?? []).filter((item) => !item.archived_at);
+                  setRelated(
+                    candidates.length > 0 ? { newId: created.memory.id, items: candidates } : null,
+                  );
                 } catch (err) {
                   // The server explains refusals (e.g. content that looks
                   // like a credential); show its words next to the form.
@@ -358,6 +399,35 @@ export function BotMemory({ bot }: { bot: Bot }) {
           role="status"
         >
           {notice}
+        </div>
+      )}
+      {related && related.items.length > 0 && (
+        <div className="mt-2 rounded-lg border border-[var(--sb-border)] px-3 py-2.5" role="status">
+          <div className="text-[12px] leading-[18px] text-[var(--sb-text-2)]">{t("memory.related")}</div>
+          <div className="mt-1.5 space-y-1.5">
+            {related.items.map((item) => (
+              <div key={item.id} className="flex items-start gap-2">
+                <span className="min-w-0 flex-1 break-words text-[12px] leading-[18px]">{item.content}</span>
+                <button
+                  type="button"
+                  disabled={busyID === item.id}
+                  onClick={() => void retireRelated(item, related.newId)}
+                  className="shrink-0 text-[11px] text-[var(--sb-text-2)] transition hover:text-[var(--sb-text)] disabled:opacity-50"
+                >
+                  {t("memory.retire")}
+                </button>
+              </div>
+            ))}
+          </div>
+          <div className="mt-1.5 flex justify-end">
+            <button
+              type="button"
+              onClick={() => setRelated(null)}
+              className="text-[11px] text-[var(--sb-text-3)] transition hover:text-[var(--sb-text)]"
+            >
+              {t("memory.keepAll")}
+            </button>
+          </div>
         </div>
       )}
 
@@ -480,9 +550,20 @@ export function BotMemory({ bot }: { bot: Bot }) {
                             {memory.source === "tidy" ? t("memory.sourceTidy") : t("memory.sourceImport")}
                           </span>
                         )}
+                        {memory.pending && !memory.archived_at && (
+                          <span
+                            className="shrink-0 rounded-full bg-[var(--sb-hover)] px-1.5 py-px text-[var(--sb-text-3)]"
+                            title={t("memory.pendingHint")}
+                          >
+                            {t("memory.pending")}
+                          </span>
+                        )}
                         {memory.archived_at && (
-                          <span className="shrink-0 rounded-full bg-[var(--sb-hover)] px-1.5 py-px text-[var(--sb-text-3)]">
-                            {t("memory.archived")}
+                          <span
+                            className="shrink-0 rounded-full bg-[var(--sb-hover)] px-1.5 py-px text-[var(--sb-text-3)]"
+                            title={memory.superseded_by ? t("memory.supersededHint") : undefined}
+                          >
+                            {memory.superseded_by ? t("memory.superseded") : t("memory.archived")}
                           </span>
                         )}
                       </span>

@@ -15,6 +15,11 @@ docker build -t superbot/computer-desktop:latest -f deploy/images/computer/Docke
 bash deploy/harden-data-permissions.sh "$(pwd)/data"
 docker compose --env-file .env -f deploy/docker-compose.yml up -d
 docker compose --env-file .env -f deploy/docker-compose.yml ps
+# Refresh the bot-computer firewall once it has been set up (see
+# deploy/README.md, "Host firewall"); the sandbox network may be new.
+if command -v iptables >/dev/null && iptables -w -n -L SUPERBOT-SANDBOX-FWD >/dev/null 2>&1; then
+  bash deploy/sandbox-firewall.sh apply
+fi
 # Keep Docker's disk in check: drop dangling images left by rebuilds and cap
 # the build cache at 15GB, least recently used first (frequent deploys
 # otherwise pile up tens of GB). Bot computers share one image and keep their

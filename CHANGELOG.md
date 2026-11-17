@@ -10,11 +10,27 @@ All notable changes to superbot are documented here. The format follows [Keep a 
 - Bilingual usage guide with prompt anatomy and copy-paste templates for research, coding, browser work, groups, long tasks, routines and review.
 - Bilingual AI-assisted deployment guide: connection card, copy-paste prompts, an exact SRE runbook, acceptance checklist and security rules for handing a server to an AI agent.
 - GitHub Actions improvements and Dependabot configuration.
+- **Primary bot as approver**: another bot's risky tool call is decided by the account's primary bot (allow, deny or hand to the user) and recorded in the conversation; the primary bot can ask the user for a batch of standing allow rules (`request_permission_rules`), which only the user can approve.
+- **Group memory** panel and `/api/teams/{id}/memories`; personal facts go to each person's own memory, also in group chats; superseded memories are archived with a link to what replaced them.
+- **Memory recall evaluation** (`superbot memory-eval`, `internal/memory/testdata`), automatic background re-embedding and a circuit breaker for the embedding service.
+- **Computers that run installed software**: on-screen text with click coordinates for text-only models (OCR), screenshots for vision models, right/double/middle click, drag, hover, click sequences, `desktop_launch`; `userapt` and `appimage-install` for installing without root; Node.js; background jobs (`shell` with `background`, `shell_jobs`); bots can switch themselves to the desktop profile.
 
 ### Changed
 
 - Replaced example deployment addresses in source, tests and documentation with generic placeholders.
 - `.env.example` now uses a relative data directory that works on any checkout.
+- Only high-risk tools ask for approval by default (`local_exec`, vault/credentials, connector add/remove, deletes); shell, Python, file writes and browser/desktop work in the bot's own computer no longer do.
+- A reply is shown before the user messages that reached the bot too late for it, live and after a reload, and tool cards stay above the reply they belong to; a reply resumed after an approval keeps what was said and done before the pause.
+- In a group, bots call teammates with an @ in the reply instead of messaging them privately.
+- E5 embeddings use `query:`/`passage:` prefixes with a per-query calibrated threshold; recall follows the bot's memory switch.
+- A bot's home directory persists in its workspace; computer ports sit behind a per-bot secret gate; an optional host firewall (`deploy/sandbox-firewall.sh`) keeps computers off private addresses and the host.
+
+### Fixed
+
+- "Always allow" on an approval card saved a rule named `tool` instead of the tool's name, so it never took effect.
+- Runs paused for approval stayed "running" forever; stale streams no longer linger as typing bubbles.
+- A memory saved while the embedding service was down was reported as failed although it was stored.
+- `deploy/sandbox-firewall.sh` with iptables-nft (rule checks print the matched rule).
 
 ## [0.1.2] - 2026-11-17
 

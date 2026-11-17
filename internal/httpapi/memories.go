@@ -23,25 +23,57 @@ type memoryDTO struct {
 	ArchivedAt *time.Time `json:"archived_at"`
 	CreatedAt  time.Time  `json:"created_at"`
 	UpdatedAt  time.Time  `json:"updated_at"`
+	// SupersededBy is the newer memory that replaced this archived one.
+	SupersededBy *uuid.UUID `json:"superseded_by,omitempty"`
+	// Pending is true while the memory has no search vector in the current
+	// embedding space (the embedding service was down, or the space changed);
+	// the worker adds it in the background.
+	Pending bool `json:"pending,omitempty"`
 }
 
 func toMemoryDTO(item store.Memory) memoryDTO {
-	return memoryDTO{
+	dto := memoryDTO{
 		ID: item.ID, Content: item.Content, ScopeType: item.ScopeType,
 		Source: item.Source, Pinned: item.Pinned, ArchivedAt: item.ArchivedAt,
 		CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
 	}
+	if item.ArchivedAt != nil && len(item.Metadata) > 0 {
+		var meta struct {
+			SupersededBy string `json:"superseded_by"`
+		}
+		if json.Unmarshal(item.Metadata, &meta) == nil {
+			if id, err := uuid.Parse(meta.SupersededBy); err == nil {
+				dto.SupersededBy = &id
+			}
+		}
+	}
+	return dto
+}
+
+func toMemoryDTOs(items []store.Memory) []memoryDTO {
+	out := make([]memoryDTO, 0, len(items))
+	for _, item := range items {
+		out = append(out, toMemoryDTO(item))
+	}
+	return out
 }
 
 // writeMemoryError keeps refused secrets distinguishable from ordinary
 // validation errors so the client can explain why nothing was saved.
 func writeMemoryError(w http.ResponseWriter, err error) {
-	if errors.Is(err, memory.ErrSecretContent) {
+	switch {
+	case errors.Is(err, memory.ErrSecretContent):
 		writeError(w, http.StatusBadRequest, "secret_rejected", err.Error())
-		return
+	case errors.Is(err, memory.ErrNotFound):
+		writeError(w, http.StatusNotFound, "not_found", "memory not found")
+	default:
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 	}
-	writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 }
+
+// memoryScopeResolver finds the scope a request addresses and checks the
+// caller may use it; on failure it has written the response.
+type memoryScopeResolver func(w http.ResponseWriter, r *http.Request) (memory.Scope, bool)
 
 func (s *Server) listScopeMemories(r *http.Request, scope memory.Scope) ([]memoryDTO, error) {
 	var items []store.Memory
@@ -59,11 +91,133 @@ func (s *Server) listScopeMemories(r *http.Request, scope memory.Scope) ([]memor
 	if err != nil {
 		return nil, err
 	}
+	space := s.memory.ModelName()
 	out := make([]memoryDTO, 0, len(items))
 	for _, item := range items {
-		out = append(out, toMemoryDTO(item))
+		dto := toMemoryDTO(item)
+		dto.Pending = item.ArchivedAt == nil && (item.Embedding == nil || item.EmbeddingModel != space)
+		out = append(out, dto)
 	}
 	return out, nil
+}
+
+func (s *Server) handleListScopeMemories(w http.ResponseWriter, r *http.Request, scope memory.Scope) {
+	out, err := s.listScopeMemories(r, scope)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "could not list memories")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"memories": out})
+}
+
+type createMemoryRequest struct {
+	Content string `json:"content"`
+	Pinned  bool   `json:"pinned"`
+	// Supersedes are memories of the same scope the user says the new one
+	// replaces; they are archived and point at the new memory.
+	Supersedes []uuid.UUID `json:"supersedes"`
+}
+
+// handleCreateScopeMemory saves one memory typed by the user. Similar
+// memories that were neither merged nor replaced come back as "related", so
+// the client can offer to retire the ones the new memory makes outdated.
+func (s *Server) handleCreateScopeMemory(w http.ResponseWriter, r *http.Request, scope memory.Scope) {
+	var req createMemoryRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if len(req.Supersedes) > 20 {
+		writeError(w, http.StatusBadRequest, "invalid_request", "too many memories to replace")
+		return
+	}
+	saved, err := s.memory.SaveWith(r.Context(), memory.SaveInput{
+		OwnerID: accountFrom(r), ScopeType: scope.Type, ScopeID: scope.ID,
+		Content: req.Content, Source: memory.SourceManual, Pinned: req.Pinned,
+		Supersedes: req.Supersedes,
+	})
+	if err != nil {
+		writeMemoryError(w, err)
+		return
+	}
+	status := http.StatusCreated
+	if saved.Duplicate {
+		status = http.StatusOK
+	}
+	dto := toMemoryDTO(saved.Memory)
+	dto.Pending = saved.Pending
+	writeJSON(w, status, map[string]any{
+		"memory":           dto,
+		"duplicate":        saved.Duplicate,
+		"pending":          saved.Pending,
+		"superseded":       toMemoryDTOs(saved.Superseded),
+		"related":          toMemoryDTOs(saved.Related),
+		"pinned_conflicts": toMemoryDTOs(saved.PinnedConflicts),
+	})
+}
+
+func (s *Server) handleUpdateScopeMemory(w http.ResponseWriter, r *http.Request, scope memory.Scope) {
+	memoryID, ok := parseUUIDParam(w, r, "memoryID")
+	if !ok {
+		return
+	}
+	var req struct {
+		Content string `json:"content"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	item, pending, err := s.memory.UpdateInScope(r.Context(), accountFrom(r), memoryID, scope, req.Content)
+	if err != nil {
+		writeMemoryError(w, err)
+		return
+	}
+	dto := toMemoryDTO(item)
+	dto.Pending = pending
+	writeJSON(w, http.StatusOK, map[string]any{"memory": dto})
+}
+
+func (s *Server) handleDeleteScopeMemory(w http.ResponseWriter, r *http.Request, scope memory.Scope) {
+	memoryID, ok := parseUUIDParam(w, r, "memoryID")
+	if !ok {
+		return
+	}
+	if err := s.memory.DeleteInScope(r.Context(), accountFrom(r), memoryID, scope); err != nil {
+		if errors.Is(err, memory.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "memory not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal", "could not delete memory")
+		return
+	}
+	writeNoContent(w)
+}
+
+// handleArchiveScopeMemory archives a memory on the user's request, pinned or
+// not; superseded_by records the newer memory that replaced it.
+func (s *Server) handleArchiveScopeMemory(w http.ResponseWriter, r *http.Request, scope memory.Scope) {
+	memoryID, ok := parseUUIDParam(w, r, "memoryID")
+	if !ok {
+		return
+	}
+	var req struct {
+		SupersededBy *uuid.UUID `json:"superseded_by"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil && !errors.Is(err, errEmptyBody) {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	by := uuid.Nil
+	if req.SupersededBy != nil {
+		by = *req.SupersededBy
+	}
+	item, err := s.memory.ArchiveInScope(r.Context(), accountFrom(r), memoryID, scope, by)
+	if err != nil {
+		writeMemoryError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"memory": toMemoryDTO(item)})
 }
 
 type importMemoryResult struct {
@@ -90,10 +244,30 @@ func (s *Server) importScopeMemories(r *http.Request, scope memory.Scope, lines 
 			result.Duplicates++
 		default:
 			result.Imported++
-			result.Memories = append(result.Memories, toMemoryDTO(saved.Memory))
+			dto := toMemoryDTO(saved.Memory)
+			dto.Pending = saved.Pending
+			result.Memories = append(result.Memories, dto)
 		}
 	}
 	return result
+}
+
+type importMemoryRequest struct {
+	Content string `json:"content"`
+}
+
+func (s *Server) handleImportScopeMemories(w http.ResponseWriter, r *http.Request, scope memory.Scope) {
+	var req importMemoryRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	lines := splitMemoryLines(req.Content)
+	if len(lines) == 0 {
+		writeError(w, http.StatusBadRequest, "invalid_request", "no memory lines found")
+		return
+	}
+	writeJSON(w, http.StatusOK, s.importScopeMemories(r, scope, lines))
 }
 
 func (s *Server) pinScopeMemory(w http.ResponseWriter, r *http.Request, scope memory.Scope) {
@@ -146,6 +320,26 @@ func (s *Server) tidyScopeMemories(w http.ResponseWriter, r *http.Request, scope
 	writeJSON(w, http.StatusOK, map[string]any{"report": report})
 }
 
+// scopeMemoryRoutes mounts the memory endpoints of one kind of scope.
+func (s *Server) scopeMemoryRoutes(r chi.Router, resolve memoryScopeResolver) {
+	with := func(handle func(http.ResponseWriter, *http.Request, memory.Scope)) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if scope, ok := resolve(w, r); ok {
+				handle(w, r, scope)
+			}
+		}
+	}
+	r.Get("/", with(s.handleListScopeMemories))
+	r.Post("/", with(s.handleCreateScopeMemory))
+	r.Post("/import", with(s.handleImportScopeMemories))
+	r.Post("/tidy", with(s.tidyScopeMemories))
+	r.Post("/{memoryID}/pin", with(s.pinScopeMemory))
+	r.Post("/{memoryID}/restore", with(s.restoreScopeMemory))
+	r.Post("/{memoryID}/archive", with(s.handleArchiveScopeMemory))
+	r.Put("/{memoryID}", with(s.handleUpdateScopeMemory))
+	r.Delete("/{memoryID}", with(s.handleDeleteScopeMemory))
+}
+
 // botMemoryScope resolves the bot in the URL and checks the caller owns it.
 func (s *Server) botMemoryScope(w http.ResponseWriter, r *http.Request) (memory.Scope, bool) {
 	botID, ok := parseUUIDParam(w, r, "botID")
@@ -159,8 +353,28 @@ func (s *Server) botMemoryScope(w http.ResponseWriter, r *http.Request) (memory.
 	return memory.Scope{Type: "bot", ID: botID}, true
 }
 
+// teamMemoryScope resolves the group in the URL and checks the caller's
+// account owns it. Team memories are shared by everyone in the group.
+func (s *Server) teamMemoryScope(w http.ResponseWriter, r *http.Request) (memory.Scope, bool) {
+	teamID, ok := parseUUIDParam(w, r, "teamID")
+	if !ok {
+		return memory.Scope{}, false
+	}
+	if _, err := s.db.GetTeam(r.Context(), store.GetTeamParams{ID: teamID, OwnerID: accountFrom(r)}); err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "team not found")
+		return memory.Scope{}, false
+	}
+	return memory.Scope{Type: "team", ID: teamID}, true
+}
+
+// userMemoryScope is the signed-in person's own scope; nobody reaches
+// another user's memories through the API.
 func userMemoryScope(r *http.Request) memory.Scope {
 	return memory.Scope{Type: "user", ID: userFrom(r).ID}
+}
+
+func (s *Server) resolveUserMemoryScope(_ http.ResponseWriter, r *http.Request) (memory.Scope, bool) {
+	return userMemoryScope(r), true
 }
 
 func (s *Server) handlePinBotMemory(w http.ResponseWriter, r *http.Request) {
@@ -175,67 +389,48 @@ func (s *Server) handleRestoreBotMemory(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
+func (s *Server) handleArchiveBotMemory(w http.ResponseWriter, r *http.Request) {
+	if scope, ok := s.botMemoryScope(w, r); ok {
+		s.handleArchiveScopeMemory(w, r, scope)
+	}
+}
+
 func (s *Server) handleTidyBotMemories(w http.ResponseWriter, r *http.Request) {
 	if scope, ok := s.botMemoryScope(w, r); ok {
 		s.tidyScopeMemories(w, r, scope)
 	}
 }
 
-func (s *Server) handlePinUserMemory(w http.ResponseWriter, r *http.Request) {
-	s.pinScopeMemory(w, r, userMemoryScope(r))
-}
-
-func (s *Server) handleRestoreUserMemory(w http.ResponseWriter, r *http.Request) {
-	s.restoreScopeMemory(w, r, userMemoryScope(r))
-}
-
-func (s *Server) handleTidyUserMemories(w http.ResponseWriter, r *http.Request) {
-	s.tidyScopeMemories(w, r, userMemoryScope(r))
-}
-
 func (s *Server) handleListBotMemories(w http.ResponseWriter, r *http.Request) {
-	botID, ok := parseUUIDParam(w, r, "botID")
-	if !ok {
-		return
+	if scope, ok := s.botMemoryScope(w, r); ok {
+		s.handleListScopeMemories(w, r, scope)
 	}
-	accountID := accountFrom(r)
-	if _, err := s.db.GetBot(r.Context(), store.GetBotParams{ID: botID, OwnerID: accountID}); err != nil {
-		writeError(w, http.StatusNotFound, "not_found", "bot not found")
-		return
-	}
-	out, err := s.listScopeMemories(r, memory.Scope{Type: "bot", ID: botID})
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "could not list memories")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"memories": out})
-}
-
-type importMemoryRequest struct {
-	Content string `json:"content"`
 }
 
 func (s *Server) handleImportBotMemories(w http.ResponseWriter, r *http.Request) {
-	botID, ok := parseUUIDParam(w, r, "botID")
-	if !ok {
-		return
+	if scope, ok := s.botMemoryScope(w, r); ok {
+		s.handleImportScopeMemories(w, r, scope)
 	}
-	accountID := accountFrom(r)
-	if _, err := s.db.GetBot(r.Context(), store.GetBotParams{ID: botID, OwnerID: accountID}); err != nil {
-		writeError(w, http.StatusNotFound, "not_found", "bot not found")
-		return
+}
+
+func (s *Server) handleUpdateBotMemory(w http.ResponseWriter, r *http.Request) {
+	if scope, ok := s.botMemoryScope(w, r); ok {
+		s.handleUpdateScopeMemory(w, r, scope)
 	}
-	var req importMemoryRequest
-	if err := decodeJSON(w, r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
+}
+
+func (s *Server) handleDeleteBotMemory(w http.ResponseWriter, r *http.Request) {
+	if scope, ok := s.botMemoryScope(w, r); ok {
+		s.handleDeleteScopeMemory(w, r, scope)
 	}
-	lines := splitMemoryLines(req.Content)
-	if len(lines) == 0 {
-		writeError(w, http.StatusBadRequest, "invalid_request", "no memory lines found")
-		return
-	}
-	writeJSON(w, http.StatusOK, s.importScopeMemories(r, memory.Scope{Type: "bot", ID: botID}, lines))
+}
+
+func (s *Server) userMemoryRoutes(r chi.Router) {
+	s.scopeMemoryRoutes(r, s.resolveUserMemoryScope)
+}
+
+func (s *Server) teamMemoryRoutes(r chi.Router) {
+	s.scopeMemoryRoutes(r, s.teamMemoryScope)
 }
 
 func splitMemoryLines(content string) []string {
@@ -264,133 +459,6 @@ func splitMemoryLines(content string) []string {
 		}
 	}
 	return out
-}
-
-func (s *Server) handleUpdateBotMemory(w http.ResponseWriter, r *http.Request) {
-	botID, ok := parseUUIDParam(w, r, "botID")
-	if !ok {
-		return
-	}
-	memoryID, ok := parseUUIDParam(w, r, "memoryID")
-	if !ok {
-		return
-	}
-	accountID := accountFrom(r)
-	if _, err := s.db.GetBot(r.Context(), store.GetBotParams{ID: botID, OwnerID: accountID}); err != nil {
-		writeError(w, http.StatusNotFound, "not_found", "bot not found")
-		return
-	}
-	var req struct {
-		Content string `json:"content"`
-	}
-	if err := decodeJSON(w, r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
-	item, err := s.memory.Update(r.Context(), accountID, memoryID, botID, req.Content)
-	if err != nil {
-		writeMemoryError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"memory": toMemoryDTO(item)})
-}
-
-func (s *Server) handleDeleteBotMemory(w http.ResponseWriter, r *http.Request) {
-	botID, ok := parseUUIDParam(w, r, "botID")
-	if !ok {
-		return
-	}
-	memoryID, ok := parseUUIDParam(w, r, "memoryID")
-	if !ok {
-		return
-	}
-	accountID := accountFrom(r)
-	if _, err := s.db.GetBot(r.Context(), store.GetBotParams{ID: botID, OwnerID: accountID}); err != nil {
-		writeError(w, http.StatusNotFound, "not_found", "bot not found")
-		return
-	}
-	if err := s.memory.Delete(r.Context(), accountID, memoryID, botID); err != nil {
-		writeError(w, http.StatusNotFound, "not_found", "memory not found")
-		return
-	}
-	writeNoContent(w)
-}
-
-func (s *Server) userMemoryRoutes(r chi.Router) {
-	r.Get("/", s.handleListUserMemories)
-	r.Post("/", s.handleCreateUserMemory)
-	r.Post("/import", s.handleImportUserMemories)
-	r.Post("/tidy", s.handleTidyUserMemories)
-	r.Post("/{memoryID}/pin", s.handlePinUserMemory)
-	r.Post("/{memoryID}/restore", s.handleRestoreUserMemory)
-	r.Put("/{memoryID}", s.handleUpdateUserMemory)
-	r.Delete("/{memoryID}", s.handleDeleteUserMemory)
-}
-
-func (s *Server) handleListUserMemories(w http.ResponseWriter, r *http.Request) {
-	out, err := s.listScopeMemories(r, userMemoryScope(r))
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", "could not list memories")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"memories": out})
-}
-
-func (s *Server) handleCreateUserMemory(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Content string `json:"content"`
-		Pinned  bool   `json:"pinned"`
-	}
-	if err := decodeJSON(w, r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
-	scope := userMemoryScope(r)
-	saved, err := s.memory.SaveWith(r.Context(), memory.SaveInput{
-		OwnerID: accountFrom(r), ScopeType: scope.Type, ScopeID: scope.ID,
-		Content: req.Content, Source: memory.SourceManual, Pinned: req.Pinned,
-	})
-	if err != nil {
-		writeMemoryError(w, err)
-		return
-	}
-	status := http.StatusCreated
-	if saved.Duplicate {
-		status = http.StatusOK
-	}
-	writeJSON(w, status, map[string]any{"memory": toMemoryDTO(saved.Memory), "duplicate": saved.Duplicate})
-}
-
-func (s *Server) handleUpdateUserMemory(w http.ResponseWriter, r *http.Request) {
-	memoryID, ok := parseUUIDParam(w, r, "memoryID")
-	if !ok {
-		return
-	}
-	var req struct {
-		Content string `json:"content"`
-	}
-	if err := decodeJSON(w, r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
-	item, err := s.memory.UpdateUser(r.Context(), accountFrom(r), memoryID, userFrom(r).ID, req.Content)
-	if err != nil {
-		writeMemoryError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"memory": toMemoryDTO(item)})
-}
-
-func (s *Server) handleDeleteUserMemory(w http.ResponseWriter, r *http.Request) {
-	memoryID, ok := parseUUIDParam(w, r, "memoryID")
-	if !ok {
-		return
-	}
-	if err := s.memory.DeleteUser(r.Context(), accountFrom(r), memoryID, userFrom(r).ID); err != nil {
-		writeError(w, http.StatusNotFound, "not_found", "memory not found")
-		return
-	}
-	writeNoContent(w)
 }
 
 // memoryStringsFromJSON understands common AI export shapes: arrays of
@@ -439,18 +507,4 @@ func memoryStringsFromJSON(content string) []string {
 	}
 	walk(root, "")
 	return out
-}
-
-func (s *Server) handleImportUserMemories(w http.ResponseWriter, r *http.Request) {
-	var req importMemoryRequest
-	if err := decodeJSON(w, r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
-	lines := splitMemoryLines(req.Content)
-	if len(lines) == 0 {
-		writeError(w, http.StatusBadRequest, "invalid_request", "no memory lines found")
-		return
-	}
-	writeJSON(w, http.StatusOK, s.importScopeMemories(r, userMemoryScope(r), lines))
 }

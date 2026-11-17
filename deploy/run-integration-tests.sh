@@ -25,12 +25,17 @@ docker exec superbot-postgres psql -U superbot -d postgres -v ON_ERROR_STOP=1 \
 
 docker build -q -t superbot/test:latest -f deploy/test.Dockerfile .
 
-# The sandbox tests drive the real Docker daemon to check that a cancelled
-# exec leaves nothing running; they only create throwaway containers named
-# superbot-killtest-*.
+# The sandbox tests drive the real Docker daemon: a cancelled exec leaves
+# nothing running, and a computer built from superbot/computer:latest has its
+# gate, home, tools and background jobs working. They only create throwaway
+# containers named sbtest-*, on this test container's network so the test can
+# reach them. SUPERBOT_TEST_NETWORK=1 also installs a Debian package with
+# userapt (needs the mirror).
 docker run --rm --network superbot_default \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -e SUPERBOT_TEST_DOCKER=1 \
+  -e SUPERBOT_TEST_COMPUTER_NETWORK=superbot_default \
+  -e SUPERBOT_TEST_NETWORK="${SUPERBOT_TEST_NETWORK:-}" \
   -e SUPERBOT_TEST_DATABASE_URL="postgres://superbot:${encoded}@postgres:5432/superbot_test?sslmode=disable" \
   -e SUPERBOT_TEST_VERBOSE="${SUPERBOT_TEST_VERBOSE:-}" \
   superbot/test:latest "${@:2}"

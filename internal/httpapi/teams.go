@@ -25,6 +25,7 @@ func (s *Server) teamRoutes(r chi.Router) {
 		r.Patch("/unread", s.handleSetTeamUnread)
 		r.Delete("/", s.handleDeleteTeam)
 		r.Put("/bots", s.handleSetTeamBots)
+		r.Route("/memories", s.teamMemoryRoutes)
 	})
 }
 

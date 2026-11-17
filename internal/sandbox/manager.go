@@ -46,6 +46,9 @@ type Info struct {
 	VNCAddr   string
 	CDPAddr   string
 	Workspace string
+	// GateToken is the secret the computer's gate requires on CDP and
+	// noVNC connections (see gate.go and GateHeaders).
+	GateToken string
 }
 
 // Manager owns per-bot Docker containers. The worker is the only process that
@@ -208,6 +211,7 @@ func (m *Manager) ensure(ctx context.Context, ownerID, botID uuid.UUID, profile 
 		Workspace:      workspace,
 		TeamMounts:     teamMounts,
 		TeamsLabel:     teamsLabel,
+		GateToken:      GateToken(m.cfg.SecretKey, botID),
 	}.CreateOptions())
 	if err != nil && !start {
 		return Info{}, fmt.Errorf("create computer: %w", err)
@@ -260,6 +264,8 @@ type ContainerSpec struct {
 	Workspace      string
 	TeamMounts     []string
 	TeamsLabel     string
+	// GateToken is handed to the computer's gate; see gate.go.
+	GateToken string
 }
 
 // CreateOptions builds the POST /containers/create request Ensure sends. It
@@ -268,19 +274,15 @@ type ContainerSpec struct {
 func (s ContainerSpec) CreateOptions() client.ContainerCreateOptions {
 	profile := normalizeProfile(s.Profile)
 	isComputer := profile != "none"
+	env := computerEnv()
+	if isComputer {
+		env = append(env, gateTokenEnv+"="+s.GateToken)
+	}
 	configObj := &container.Config{
 		Image:      s.Image,
 		WorkingDir: "/workspace",
 		User:       "1000:1000",
-		Env: []string{
-			"HOME=/tmp",
-			"TMPDIR=/tmp",
-			"DISPLAY=:99",
-			"TZ=CST-8",
-			"PYTHONDONTWRITEBYTECODE=1",
-			"PIP_NO_CACHE_DIR=1",
-			"LANG=C.UTF-8",
-		},
+		Env:        env,
 		Labels: map[string]string{
 			"superbot.bot_id":  s.BotID.String(),
 			"superbot.profile": profile,
@@ -295,6 +297,10 @@ func (s ContainerSpec) CreateOptions() client.ContainerCreateOptions {
 		CapDrop:       []string{"ALL"},
 		SecurityOpt:   []string{"no-new-privileges"},
 		ShmSize:       64 * 1024 * 1024,
+		// A minimal init as PID 1 reaps what detached programs (background
+		// jobs, launched apps) leave behind, so zombies cannot pile up
+		// against the pids limit.
+		Init: boolPtr(true),
 	}
 	if isComputer {
 		if profile == "desktop" {
@@ -326,9 +332,9 @@ func (s ContainerSpec) CreateOptions() client.ContainerCreateOptions {
 			hostConfig.PortBindings = bindings
 		}
 		hostConfig.ShmSize = 512 * 1024 * 1024
-		// exec: HOME is /tmp, so `pip install --user` puts packages with
-		// compiled modules (lxml, numpy) there; Docker's default noexec
-		// made every such import fail with "failed to map segment".
+		// exec: AppImages unpack themselves here and programs run from
+		// caches; Docker's default noexec made such loads fail with
+		// "failed to map segment".
 		hostConfig.Tmpfs = map[string]string{"/tmp": "rw,exec,size=1g,mode=1777"}
 		hostConfig.Resources = container.Resources{
 			Memory:     computerMemory,
@@ -358,10 +364,13 @@ func (s ContainerSpec) CreateOptions() client.ContainerCreateOptions {
 const (
 	teamsLabelKey    = "superbot.teams"
 	mountsVersionKey = "superbot.mounts"
-	// mountsVersion changes whenever the mount layout does, so containers
-	// created under an older layout are rebuilt once. 4: /tmp allows exec
-	// (and picks up the image with the document libraries).
-	mountsVersion = "4"
+	// mountsVersion changes whenever the container configuration does, so
+	// containers created under an older one are rebuilt once (the
+	// workspace persists). 4: /tmp allows exec (and picks up the image with
+	// the document libraries). 5: the home directory moved into the
+	// workspace, the gate secret, and the image with OCR, Node.js and the
+	// user-space installers.
+	mountsVersion = "5"
 )
 
 // teamMounts returns the bind mounts for the shared directories of the
@@ -401,6 +410,7 @@ func teamBinds(dataDir string, teamIDs []uuid.UUID, ensureDir func(string) error
 func (m *Manager) infoFromInspect(ctx context.Context, ownerID, botID uuid.UUID, profile, workspace, name string, inspected container.InspectResponse) (Info, error) {
 	vncAddr := ""
 	cdpAddr := ""
+	token := GateToken(m.cfg.SecretKey, botID)
 	if profile != "none" {
 		if m.sandboxNetwork != "" {
 			vncAddr = name + ":6080"
@@ -409,7 +419,7 @@ func (m *Manager) infoFromInspect(ctx context.Context, ownerID, botID uuid.UUID,
 			vncAddr = m.hostAddr(inspected.NetworkSettings, "6080/tcp")
 			cdpAddr = m.hostAddr(inspected.NetworkSettings, "9223/tcp")
 		}
-		if err := m.waitForCDP(ctx, cdpAddr, 45*time.Second); err != nil {
+		if err := m.waitForCDP(ctx, cdpAddr, token, 45*time.Second); err != nil {
 			m.logger.Warn("computer cdp not ready", "bot_id", botID, "error", err)
 		}
 	}
@@ -426,7 +436,7 @@ func (m *Manager) infoFromInspect(ctx context.Context, ownerID, botID uuid.UUID,
 			m.logger.Warn("record workspace failed", "bot_id", botID, "error", err)
 		}
 	}
-	return Info{Name: name, Profile: profile, VNCAddr: vncAddr, CDPAddr: cdpAddr, Workspace: workspace}, nil
+	return Info{Name: name, Profile: profile, VNCAddr: vncAddr, CDPAddr: cdpAddr, Workspace: workspace, GateToken: token}, nil
 }
 
 func (m *Manager) hostAddr(settings *container.NetworkSettings, port string) string {
@@ -441,7 +451,7 @@ func (m *Manager) hostAddr(settings *container.NetworkSettings, port string) str
 	return ""
 }
 
-func (m *Manager) waitForCDP(ctx context.Context, addr string, timeout time.Duration) error {
+func (m *Manager) waitForCDP(ctx context.Context, addr, token string, timeout time.Duration) error {
 	if addr == "" {
 		return fmt.Errorf("cdp address is empty")
 	}
@@ -454,6 +464,9 @@ func (m *Manager) waitForCDP(ctx context.Context, addr string, timeout time.Dura
 			// present 127.0.0.1 so the probe returns JSON.
 			if _, port, found := strings.Cut(addr, ":"); found && port != "" {
 				req.Host = "127.0.0.1:" + port
+			}
+			if token != "" {
+				req.Header.Set(GateHeader, token)
 			}
 			resp, err := http.DefaultClient.Do(req)
 			if err == nil {
@@ -483,6 +496,13 @@ func (m *Manager) Exec(ctx context.Context, ownerID, botID uuid.UUID, profile st
 	return m.execInContainer(ctx, info.Name, cmd, workdir, timeout)
 }
 
+// ExecIn runs cmd in the named, running container. Tools use Exec, which
+// also creates and starts the bot's computer; ExecIn is for callers that
+// manage the container themselves (integration tests).
+func (m *Manager) ExecIn(ctx context.Context, name string, cmd []string, workdir string, timeout time.Duration) (ExecResult, error) {
+	return m.execInContainer(ctx, name, cmd, workdir, timeout)
+}
+
 func (m *Manager) execInContainer(ctx context.Context, name string, cmd []string, workdir string, timeout time.Duration) (ExecResult, error) {
 	if timeout <= 0 {
 		timeout = 120 * time.Second
@@ -504,7 +524,7 @@ func (m *Manager) execInContainer(ctx context.Context, name string, cmd []string
 		AttachStderr: true,
 		Cmd:          wrapped,
 		WorkingDir:   workdir,
-		Env:          []string{"HOME=/tmp", "TMPDIR=/tmp", "TZ=CST-8", "PYTHONDONTWRITEBYTECODE=1", "LANG=C.UTF-8", execMarker(marker)},
+		Env:          append(computerEnv(), execMarker(marker)),
 	})
 	if err != nil {
 		return ExecResult{}, fmt.Errorf("create exec: %w", err)
@@ -645,8 +665,10 @@ func (m *Manager) Reconcile(ctx context.Context) {
 	m.ProcessActions(ctx)
 	m.removeOrphans(ctx)
 	// Put computers to sleep after 30 minutes without bot activity; a new
-	// message touches the bot and wakes it on the next reconcile.
-	if n, err := m.db.StopIdleWorkspaces(ctx, "30 minutes"); err == nil && n > 0 {
+	// message touches the bot and wakes it on the next reconcile. One that
+	// runs a background job counts as in use (until the job's time limit).
+	m.keepBusyComputersAwake(ctx, idleSleepAfter)
+	if n, err := m.db.StopIdleWorkspaces(ctx, idleSleepAfter); err == nil && n > 0 {
 		m.logger.Info("auto-slept idle workspaces", "count", n)
 	} else if err != nil {
 		m.logger.Warn("auto-sleep workspaces failed", "error", err)
@@ -677,7 +699,12 @@ func (m *Manager) Reconcile(ctx context.Context) {
 	}
 }
 
+// idleSleepAfter is how long a computer runs without use before it sleeps.
+const idleSleepAfter = "30 minutes"
+
 func int64Ptr(value int64) *int64 { return &value }
+
+func boolPtr(value bool) *bool { return &value }
 
 func (m *Manager) snapshotWorkspace(ctx context.Context, action store.WorkspaceAction) error {
 	workspace := m.WorkspacePath(action.BotID)
@@ -703,7 +730,15 @@ func (m *Manager) snapshotWorkspace(ctx context.Context, action store.WorkspaceA
 		if err != nil || relative == "." {
 			return err
 		}
-		header, err := tar.FileInfoHeader(info, "")
+		// Programs the bot installed (userapt, pip, npm) are full of
+		// library links; keep their targets so a restore brings them back.
+		link := ""
+		if info.Mode()&os.ModeSymlink != 0 {
+			if link, err = os.Readlink(item); err != nil {
+				return err
+			}
+		}
+		header, err := tar.FileInfoHeader(info, link)
 		if err != nil {
 			return err
 		}
@@ -764,7 +799,21 @@ func (m *Manager) restoreWorkspace(ctx context.Context, action store.WorkspaceAc
 	if err := m.EnsureDirs(ctx, workspace); err != nil {
 		return err
 	}
-	file, err := os.Open(snapshot.ArchivePath)
+	if err := extractSnapshot(snapshot.ArchivePath, workspace); err != nil {
+		return err
+	}
+	if _, err := m.Ensure(ctx, action.OwnerID, action.BotID, bot.ComputerProfile); err != nil {
+		return err
+	}
+	return nil
+}
+
+// extractSnapshot unpacks a workspace snapshot into workspace. Every path is
+// resolved inside the workspace (os.Root), so neither ".." nor a link can
+// place a file outside it, and links are created only after all files and
+// directories, so nothing is ever written through one.
+func extractSnapshot(archivePath, workspace string) error {
+	file, err := os.Open(archivePath)
 	if err != nil {
 		return fmt.Errorf("open snapshot: %w", err)
 	}
@@ -774,6 +823,13 @@ func (m *Manager) restoreWorkspace(ctx context.Context, action store.WorkspaceAc
 		return err
 	}
 	defer reader.Close()
+	root, err := os.OpenRoot(workspace)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	type link struct{ name, target string }
+	var links []link
 	archive := tar.NewReader(reader)
 	for {
 		header, err := archive.Next()
@@ -783,20 +839,23 @@ func (m *Manager) restoreWorkspace(ctx context.Context, action store.WorkspaceAc
 		if err != nil {
 			return err
 		}
-		target := filepath.Join(workspace, filepath.FromSlash(header.Name))
-		if !strings.HasPrefix(target, workspace+string(os.PathSeparator)) {
+		name := filepath.Clean(filepath.FromSlash(header.Name))
+		if name == "." || !filepath.IsLocal(name) {
 			continue
 		}
+		perm := os.FileMode(header.Mode).Perm()
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, os.FileMode(header.Mode)); err != nil {
+			if err := root.MkdirAll(name, perm|0o700); err != nil {
 				return err
 			}
 		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return err
+			if dir := filepath.Dir(name); dir != "." {
+				if err := root.MkdirAll(dir, 0o755); err != nil {
+					return err
+				}
 			}
-			out, err := os.Create(target)
+			out, err := root.OpenFile(name, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, perm|0o600)
 			if err != nil {
 				return err
 			}
@@ -804,11 +863,25 @@ func (m *Manager) restoreWorkspace(ctx context.Context, action store.WorkspaceAc
 				out.Close()
 				return err
 			}
-			out.Close()
+			if err := out.Close(); err != nil {
+				return err
+			}
+			// OpenFile's mode is filtered by the umask; restore the
+			// recorded one (executables must stay executable).
+			_ = root.Chmod(name, perm|0o600)
+		case tar.TypeSymlink:
+			if header.Linkname != "" {
+				links = append(links, link{name: name, target: header.Linkname})
+			}
 		}
 	}
-	if _, err := m.Ensure(ctx, action.OwnerID, action.BotID, bot.ComputerProfile); err != nil {
-		return err
+	for _, l := range links {
+		if dir := filepath.Dir(l.name); dir != "." {
+			if err := root.MkdirAll(dir, 0o755); err != nil {
+				continue
+			}
+		}
+		_ = root.Symlink(l.target, l.name)
 	}
 	return nil
 }
