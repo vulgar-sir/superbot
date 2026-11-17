@@ -155,6 +155,56 @@ Without [Task](https://taskfile.dev/), run `go run ./cmd/superbot serve`, `go ru
 
 On first boot superbot creates the admin account. With no provider configured, `SUPERBOT_DEEPSEEK_API_KEY` is used to seed a DeepSeek provider.
 
+## Deploy with an AI assistant
+
+You can hand the deployment to Claude Code, Codex, Cursor or another AI agent. Give it the repository URL, your server connection details and the prompt from **[docs/deploy-with-ai.md](docs/deploy-with-ai.md)**. The agent is instructed to read the repository first, run read-only preflight checks, present a plan, and wait for your approval before changing the server.
+
+Short version:
+
+```text
+You are an experienced SRE / DevOps agent. Deploy superbot on my server.
+
+Project: https://github.com/vulgar-sir/superbot
+Server: <host>, SSH port <port>, user <deploy-user>, key <path>
+OS/resources: <Ubuntu 24.04, 8C16G, 200GB>
+Domain/TLS: <domain or none>
+LLM: <provider/model; key is at <path on the server>>
+
+Read README.md, deploy/ and docs/deploy-with-ai.md first.
+Run read-only preflight checks and show me a plan; wait for my approval before changing anything.
+Never echo secrets; set .env to mode 600. Stop and ask before destructive commands, firewall/DNS/port changes, or sudo.
+After deployment, verify with the acceptance checklist and send a hand-off report.
+```
+
+The full guide includes a fill-in connection card, a complete prompt, the exact runbook, an acceptance checklist and a security contract. Read it before giving an AI access to a real server: **[docs/deploy-with-ai.md](docs/deploy-with-ai.md)**.
+
+## How to use superbot
+
+1. **Add a model provider** in **Settings → Providers** (DeepSeek, any OpenAI-compatible endpoint, Anthropic, or local Ollama). Set the context window, price and vision/tool capabilities in the model catalog.
+2. **Create a bot** from the sidebar, then open **Details** to give it a persona, a tool policy, a workspace, memory and — only if needed — a browser or computer.
+3. **Send a task.** In a single-bot room, just write to the bot. In a group, mention the bots you want with `@BotName`; unmentioned bots stay quiet and the main bot is the fallback.
+4. **Steer and verify.** Use `/side` for a side question, interject while a bot works, stop a run, approve high-risk tools, and inspect tool calls, tokens and cost in the right panel.
+5. **Make it repeatable.** Turn recurring work into a cron/`@every` routine, save a group as a team, or set a group goal with acceptance criteria.
+
+A useful prompt has eight parts: **role, goal, context, constraints, tools, deliverable, acceptance criteria and evidence**. For example:
+
+```text
+You are my research assistant. Goal: research the 2026 Chinese AI phone market
+and produce a decision memo of at most 1,500 words.
+
+Context: the reader is a product lead; use public sources only.
+Constraints: every key conclusion needs a source link and date; separate fact,
+inference and unknown; never invent data.
+Deliverable: a one-page summary, a key-player comparison table, three
+opportunities with risks, and a source list.
+Acceptance: every number can be found in a source.
+Evidence: list the links you actually opened.
+
+First give me a four-step plan and wait for my confirmation.
+```
+
+The full guide, with copy-paste templates for coding, browser work, group collaboration, long tasks, routines and review, is in **[docs/usage.md](docs/usage.md)** (English) and **[docs/usage.zh-CN.md](docs/usage.zh-CN.md)** (中文).
+
 ## Configuration
 
 The templates document every supported variable:

@@ -7,6 +7,8 @@ All notable changes to superbot are documented here. The format follows [Keep a 
 ### Added
 
 - Community files: bilingual README, contributing guide, security policy, code of conduct, acknowledgments and issue/PR templates.
+- Bilingual usage guide with prompt anatomy and copy-paste templates for research, coding, browser work, groups, long tasks, routines and review.
+- Bilingual AI-assisted deployment guide: connection card, copy-paste prompts, an exact SRE runbook, acceptance checklist and security rules for handing a server to an AI agent.
 - GitHub Actions improvements and Dependabot configuration.
 
 ### Changed

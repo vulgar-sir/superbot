@@ -155,6 +155,53 @@ task web                        # http://127.0.0.1:3000
 
 首次启动会自动创建管理员；如果还没有配置任何 Provider，会用 `SUPERBOT_DEEPSEEK_API_KEY` 种子化一个 DeepSeek Provider。
 
+## 让 AI 帮你部署
+
+你可以把部署交给 Claude Code、Codex、Cursor 或其他 AI Agent。把**项目链接**、**服务器连接方式**和 **[docs/deploy-with-ai.zh-CN.md](docs/deploy-with-ai.zh-CN.md)** 里的提示词交给它；指南要求 AI 先读仓库、做只读预检、给出计划，得到你确认后才修改服务器。
+
+短版提示词：
+
+```text
+你是一名经验丰富的 SRE / DevOps Agent。请帮我在我的服务器上部署 superbot。
+
+项目: https://github.com/vulgar-sir/superbot
+服务器: <host>，SSH 端口 <port>，用户 <deploy-user>，密钥 <path>
+系统/配置: <Ubuntu 24.04，8C16G，200GB>
+域名/TLS: <域名或“无”>
+LLM: <Provider/模型；Key 在服务器的 <path>>
+
+先读 README.md、deploy/ 和 docs/deploy-with-ai.zh-CN.md。
+先做只读预检并给我计划；等我确认后再修改服务器。
+不要回显密钥；.env 权限设为 600。遇到破坏性命令、防火墙/DNS/端口改动或 sudo，先停下来问我。
+部署完成后按验收清单验证，并给我一份交付报告。
+```
+
+完整指南包含可填写的连接卡、完整提示词、精确执行步骤、验收清单和安全红线。把服务器交给 AI 之前请先读一遍：**[docs/deploy-with-ai.zh-CN.md](docs/deploy-with-ai.zh-CN.md)**。
+
+## 使用说明
+
+1. **配置模型**：设置 → Provider，添加 DeepSeek、任意 OpenAI 兼容端点、Anthropic 或本机 Ollama；在模型目录里维护上下文长度、价格、视觉/工具能力。
+2. **创建 Bot**：侧栏 **+** 创建，点 **详情** 配置人设、工具策略、工作区、记忆；需要上网或图形界面时再开启浏览器/云电脑。
+3. **发任务**：单 Bot 房间直接发消息；群聊里用 `@BotName` 点名，没被 @ 的 Bot 不会说话，主 Bot 兜底。
+4. **纠偏与验收**：`/side` 旁路提问、Bot 干活时插话、随时停止、审批高风险工具；右侧面板查看工具调用、token 与成本。
+5. **变成可复用流程**：把重复工作做成 cron / `@every` 例程，把群聊保存为团队，或用「群目标」约定验收标准。
+
+一个好提示词通常包含八部分：**角色、目标、背景、约束、工具、交付物、验收标准、证据**。例如：
+
+```text
+你是我的研究助理。目标：调研 2026 年中国 AI 手机市场，输出 1500 字以内的决策摘要。
+
+背景：读者是产品负责人；只使用公开可查的资料。
+约束：每条关键结论附来源链接和日期；区分事实、推断和未知；不要编造数据。
+交付：一页摘要、关键玩家对比表、三个机会点与风险、来源清单。
+验收：每个数字都能在来源里找到。
+证据：列出你实际打开的链接。
+
+先给出 4 步执行计划，等我确认后再开始。
+```
+
+完整指南、以及编码、浏览器操作、群聊协作、长任务、例程和审查的可复制模板见 **[docs/usage.zh-CN.md](docs/usage.zh-CN.md)**（中文）与 **[docs/usage.md](docs/usage.md)**（English）。
+
 ## 配置
 
 两个模板覆盖了全部支持的环境变量：

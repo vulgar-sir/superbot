@@ -8,6 +8,10 @@ The [project README](../README.md) is the best entry point. The documents below 
 
 | Document | Language | Contents |
 |---|---|---|
+| [`deploy-with-ai.md`](deploy-with-ai.md) | English | A connection card, prompt and exact runbook for letting an AI agent deploy superbot on a server. |
+| [`deploy-with-ai.zh-CN.md`](deploy-with-ai.zh-CN.md) | 中文 | 把项目链接和服务器连接方式交给 AI，让 AI 代为部署的完整提示词与执行步骤。 |
+| [`usage.md`](usage.md) | English | First-run walkthrough, prompt anatomy, copy-paste templates for research, coding, browser work, groups, long tasks, routines and review. |
+| [`usage.zh-CN.md`](usage.zh-CN.md) | 中文 | 第一次使用、提示词写法、可复制模板（研究 / 编码 / 浏览器 / 群聊 / 长任务 / 例程 / 审查）。 |
 | [`functional-parity-matrix.md`](functional-parity-matrix.md) | 中文 | The single source of truth for feature completeness and verification evidence. |
 | [`configuration-required.md`](configuration-required.md) | 中文 | Features that need external credentials, network access or platform support. |
 | [`pending-verification.md`](pending-verification.md) | 中文 | Items still awaiting real-world verification. |
@@ -36,6 +40,10 @@ We would rather show a `requires_config` badge than pretend a feature works. Whe
 
 | 文档 | 语言 | 内容 |
 |---|---|---|
+| [`deploy-with-ai.zh-CN.md`](deploy-with-ai.zh-CN.md) | 中文 | 把项目链接和服务器连接方式交给 AI，让 AI 代为部署的完整提示词与执行步骤。 |
+| [`deploy-with-ai.md`](deploy-with-ai.md) | English | Connection card, prompt and exact runbook for AI-assisted deployment. |
+| [`usage.zh-CN.md`](usage.zh-CN.md) | 中文 | 第一次使用、提示词写法、可复制模板（研究 / 编码 / 浏览器 / 群聊 / 长任务 / 例程 / 审查）。 |
+| [`usage.md`](usage.md) | English | First-run walkthrough, prompt anatomy and copy-paste templates. |
 | [`functional-parity-matrix.md`](functional-parity-matrix.md) | 中文 | 功能完成度与验收证据的唯一事实来源。 |
 | [`configuration-required.md`](configuration-required.md) | 中文 | 需要外部凭据、网络或平台支持的能力。 |
 | [`pending-verification.md`](pending-verification.md) | 中文 | 仍待真实验收的条目。 |
