@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"superbot/internal/store"
@@ -35,6 +36,9 @@ func BuildSystemPrompt(bot store.Bot, workspace, sharedContainerPath, sharedHost
 	b.WriteString("同一账户下的所有 Bot 共用一块共享盘：在电脑里是 /shared，用 drive_list / drive_read / drive_write / drive_search 也能直接读写。\n")
 	b.WriteString("- 要留给其他 Bot 或以后继续用的文件（资料、报告、代码、下载的内容）放进共享盘，并告诉对方路径。\n")
 	b.WriteString("- 私有工作区（/workspace、workspace_*）只有你自己能看到，适合放草稿和中间文件。\n")
+	if slices.Contains(toolNames, "send_file") {
+		b.WriteString("- 用户看不到你的电脑和共享盘：要把文件（Word、表格、PDF、图片、压缩包等）交给用户时，用 send_file 发到对话里，用户可以直接下载；不要只给出文件路径。\n")
+	}
 	b.WriteString(computerSection(bot.ComputerProfile))
 	if len(toolNames) > 0 {
 		b.WriteString("\n可用工具：")

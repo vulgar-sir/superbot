@@ -436,6 +436,7 @@ type Querier interface {
 	SetPrimaryBot(ctx context.Context, arg SetPrimaryBotParams) error
 	SetProjectAccess(ctx context.Context, arg SetProjectAccessParams) error
 	SetSkillAccess(ctx context.Context, arg SetSkillAccessParams) error
+	SetSkillDescription(ctx context.Context, arg SetSkillDescriptionParams) error
 	SetSkillDescriptionEn(ctx context.Context, arg SetSkillDescriptionEnParams) error
 	SetSkillFilesPath(ctx context.Context, arg SetSkillFilesPathParams) (Skill, error)
 	SetSkillStatus(ctx context.Context, arg SetSkillStatusParams) (Skill, error)

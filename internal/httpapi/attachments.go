@@ -102,9 +102,17 @@ func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "could not load attachment")
 		return
 	}
+	// Images, audio, video, PDF and plain text open in the browser; anything
+	// else (Word, zip, HTML a bot wrote) is downloaded. ?download=1 always
+	// downloads.
+	disposition := "inline"
+	if r.URL.Query().Get("download") != "" || !inlineSafe(attachment.MimeType) {
+		disposition = "attachment"
+	}
 	w.Header().Set("Content-Type", attachment.MimeType)
-	w.Header().Set("Content-Length", strconv.FormatInt(attachment.SizeBytes, 10))
-	w.Header().Set("Content-Disposition", "inline; filename=\""+attachment.Filename+"\"")
+	w.Header().Set("Content-Length", strconv.FormatInt(int64(len(attachment.Content)), 10))
+	w.Header().Set("Content-Disposition", contentDisposition(disposition, attachment.Filename))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "private, max-age=3600")
 	_, _ = w.Write(attachment.Content)
 }

@@ -358,6 +358,21 @@ func (q *Queries) SetSkillAccess(ctx context.Context, arg SetSkillAccessParams) 
 	return err
 }
 
+const setSkillDescription = `-- name: SetSkillDescription :exec
+UPDATE skills SET description = $3, updated_at = now() WHERE id = $1 AND owner_id = $2
+`
+
+type SetSkillDescriptionParams struct {
+	ID          uuid.UUID `json:"id"`
+	OwnerID     uuid.UUID `json:"owner_id"`
+	Description string    `json:"description"`
+}
+
+func (q *Queries) SetSkillDescription(ctx context.Context, arg SetSkillDescriptionParams) error {
+	_, err := q.db.Exec(ctx, setSkillDescription, arg.ID, arg.OwnerID, arg.Description)
+	return err
+}
+
 const setSkillDescriptionEn = `-- name: SetSkillDescriptionEn :exec
 UPDATE skills SET description_en = $3 WHERE id = $1 AND owner_id = $2
 `

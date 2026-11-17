@@ -127,7 +127,9 @@ func (s *Server) toMessageDTOs(ctx context.Context, userID uuid.UUID, messages [
 			Reacted: row.Reacted,
 		})
 	}
-	attachments, err := s.db.ListAttachmentsForMessages(ctx, ids)
+	// Only the metadata: files a bot sends can be large, and the list never
+	// needs their bytes.
+	attachments, err := s.db.ListAttachmentMetaForMessages(ctx, ids)
 	if err != nil {
 		s.logger.Warn("list message attachments failed", "error", err)
 		attachments = nil
@@ -139,7 +141,13 @@ func (s *Server) toMessageDTOs(ctx context.Context, userID uuid.UUID, messages [
 		}
 		attachmentsByMessage[*attachment.MessageID] = append(
 			attachmentsByMessage[*attachment.MessageID],
-			toAttachmentDTO(attachment),
+			attachmentDTO{
+				ID:        attachment.ID,
+				Filename:  attachment.Filename,
+				MimeType:  attachment.MimeType,
+				SizeBytes: attachment.SizeBytes,
+				URL:       "/api/attachments/" + attachment.ID.String(),
+			},
 		)
 	}
 	pollRows, err := s.db.ListPollVotes(ctx, store.ListPollVotesParams{

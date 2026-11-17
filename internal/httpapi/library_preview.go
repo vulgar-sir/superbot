@@ -50,13 +50,8 @@ func (s *Server) handleLibraryPreview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "library item has no file")
 		return
 	}
-	root := filepath.Clean(s.cfg.DataDir)
-	path := filepath.Clean(item.FilePath)
-	if !strings.HasPrefix(path, root+string(os.PathSeparator)) {
-		writeError(w, http.StatusNotFound, "not_found", "library file not found")
-		return
-	}
-	if _, err := os.Stat(path); err != nil {
+	path, found := s.libraryFilePath(item)
+	if !found {
 		writeError(w, http.StatusNotFound, "not_found", "library file not found")
 		return
 	}

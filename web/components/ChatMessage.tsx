@@ -5,6 +5,7 @@ import {
   Check,
   Copy,
   CornerDownRight,
+  Download,
   FileText,
   Loader2,
   Pencil,
@@ -459,7 +460,7 @@ export function ChatMessage({
             </div>
           )}
           <div className="sb-bubble" data-group={groupPosition ?? "single"}>
-            <Markdown content={stripModelArtifacts(message.content)} />
+            {message.content.trim() !== "" && <Markdown content={stripModelArtifacts(message.content)} />}
             <MessageAttachments attachments={message.attachments} tone="bot" />
             {message.poll && (
               <PollCard poll={message.poll} busy={pollBusy} onVote={votePoll} />
@@ -603,7 +604,11 @@ function MessageAttachments({
   attachments?: Attachment[];
   tone: "user" | "bot";
 }) {
+  const { t } = useLanguage();
   if (!attachments || attachments.length === 0) return null;
+  // Downloads stay on this page (no new tab): the session cookie goes along,
+  // and the desktop app shows its save dialog instead of opening a browser
+  // that is not signed in.
   return (
     <div className="mt-1.5 flex flex-wrap gap-1.5">
       {attachments.map((attachment) =>
@@ -616,36 +621,44 @@ function MessageAttachments({
             className="max-w-full"
           />
         ) : attachment.mime_type.startsWith("image/") ? (
-          <a
-            key={attachment.id}
-            href={attachment.url}
-            target="_blank"
-            rel="noreferrer"
-            className="block overflow-hidden rounded-lg"
-          >
-            <img
-              src={attachment.url}
-              alt={attachment.filename}
-              className="max-h-60 max-w-full rounded-lg object-cover"
-            />
-          </a>
+          <div key={attachment.id} className="relative overflow-hidden rounded-lg">
+            <a href={attachment.url} target="_blank" rel="noreferrer" className="block">
+              <img
+                src={attachment.url}
+                alt={attachment.filename}
+                className="max-h-60 max-w-full rounded-lg object-cover"
+              />
+            </a>
+            <a
+              href={api.attachmentDownloadURL(attachment.url)}
+              download={attachment.filename}
+              className="absolute right-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-md bg-black/45 text-white transition hover:bg-black/65"
+              aria-label={t("chat.downloadFile", { name: attachment.filename })}
+              title={t("chat.downloadFile", { name: attachment.filename })}
+            >
+              <Download className="h-3.5 w-3.5" />
+            </a>
+          </div>
         ) : (
           <a
             key={attachment.id}
-            href={attachment.url}
-            target="_blank"
-            rel="noreferrer"
+            href={api.attachmentDownloadURL(attachment.url)}
+            download={attachment.filename}
+            aria-label={t("chat.downloadFile", { name: attachment.filename })}
+            title={t("chat.downloadFile", { name: attachment.filename })}
+            data-attachment-file
             className={
               tone === "user"
-                ? "flex items-center gap-1.5 rounded-lg bg-white/15 px-2 py-1.5 text-[12px] text-white/90"
-                : "flex items-center gap-1.5 rounded-lg bg-[var(--sb-hover)] px-2 py-1.5 text-[12px] text-[var(--sb-text-2)]"
+                ? "flex items-center gap-1.5 rounded-lg bg-white/15 px-2 py-1.5 text-[12px] text-white/90 transition hover:bg-white/25"
+                : "flex items-center gap-1.5 rounded-lg border border-[var(--sb-border)] bg-[var(--sb-hover)] px-2.5 py-2 text-[12px] text-[var(--sb-text-2)] transition hover:border-[var(--sb-border-strong)] hover:text-[var(--sb-text)]"
             }
           >
             <FileText className="h-3.5 w-3.5 shrink-0" />
-            <span className="max-w-[180px] truncate">{attachment.filename}</span>
+            <span className="max-w-[220px] truncate">{attachment.filename}</span>
             <span className={tone === "user" ? "text-white/60" : "text-[var(--sb-text-4)]"}>
               {formatBytes(attachment.size_bytes)}
             </span>
+            <Download className="h-3.5 w-3.5 shrink-0 opacity-70" />
           </a>
         ),
       )}

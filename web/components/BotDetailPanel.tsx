@@ -9,7 +9,7 @@ import {
   ChevronRight,
   Clock,
   Download,
-  ExternalLink,
+  Eye,
   FileText,
   Folder,
   Image as ImageIcon,
@@ -37,7 +37,7 @@ import { BotAvatar } from "./BotAvatar";
 import { BotAvatarPicker } from "./BotAvatarPicker";
 import { GOAL_SECTION_ID } from "./GoalPanel";
 import { useLanguage } from "./LanguageProvider";
-import { Markdown } from "./Markdown";
+import { LibraryDownloadButton, LibraryPreview, downloadLibraryItem } from "./LibraryPreview";
 import { cn, formatBytes, timeAgo } from "@/lib/format";
 import type {
   Activity,
@@ -1223,6 +1223,7 @@ export function BotDetailPanel({
                             </span>
                           </span>
                         </button>
+                        <LibraryDownloadButton item={item} variant="icon" />
                         <button
                           type="button"
                           className="flex h-6 w-6 items-center justify-center rounded text-[var(--sb-text-4)] transition hover:bg-[var(--sb-hover)] hover:text-[var(--sb-text)]"
@@ -1319,9 +1320,15 @@ export function BotDetailPanel({
             ? [
                 {
                   key: "open",
-                  label: "打开",
-                  icon: <ExternalLink className="h-3.5 w-3.5" />,
+                  label: t("library.open"),
+                  icon: <Eye className="h-3.5 w-3.5" />,
                   onSelect: () => void openItem(itemMenu.item),
+                },
+                {
+                  key: "download",
+                  label: t("library.download"),
+                  icon: <Download className="h-3.5 w-3.5" />,
+                  onSelect: () => downloadLibraryItem(itemMenu.item),
                 },
                 {
                   key: "delete",
@@ -1343,6 +1350,7 @@ export function BotDetailPanel({
         title={detail?.item.title ?? "加载中…"}
         subtitle={detail?.item.description || undefined}
         size="lg"
+        headerExtra={detail && !detailLoading ? <LibraryDownloadButton item={detail.item} /> : undefined}
       >
         {detailLoading || !detail ? (
           <div className="flex items-center justify-center py-16">
@@ -1355,59 +1363,6 @@ export function BotDetailPanel({
       {confirmElement}
     </aside>
   );
-}
-
-function LibraryPreview({ detail }: { detail: LibraryItemDetail }) {
-  const { item, content } = detail;
-  const url = item.file_url;
-  const mime = item.mime_type || "";
-  if (url && mime.startsWith("image/")) {
-    return (
-      <a href={url} target="_blank" rel="noreferrer" className="block">
-        <img src={url} alt={item.title} className="max-h-[62vh] w-full rounded-lg object-contain" />
-      </a>
-    );
-  }
-  if (url && mime.startsWith("audio/")) {
-    return <audio controls preload="metadata" src={url} className="w-full" />;
-  }
-  if (url && mime.startsWith("video/")) {
-    return <video controls src={url} className="max-h-[62vh] w-full rounded-lg bg-black" />;
-  }
-  if (url && mime === "application/pdf") {
-    return <iframe title={item.title} src={url} className="h-[62vh] w-full rounded-lg border border-[var(--sb-border)]" />;
-  }
-  const extension = (item.title.includes(".") ? item.title.split(".").pop() : "")?.toLowerCase() ?? "";
-  const officePreview =
-    extension === "docx" ||
-    extension === "xlsx" ||
-    extension === "pptx" ||
-    mime.includes("wordprocessingml") ||
-    mime.includes("spreadsheetml") ||
-    mime.includes("presentationml");
-  const textPreview =
-    ["txt", "csv", "tsv", "json", "log", "md", "py", "go", "js", "ts", "tsx", "jsx", "sh", "css", "yaml", "yml", "sql", "rs", "java", "c", "cpp", "html", "htm"].includes(
-      extension,
-    ) || mime.startsWith("text/");
-  if (url && (officePreview || textPreview)) {
-    return (
-      <iframe
-        title={item.title}
-        src={`/api/library/${item.id}/preview`}
-        className="h-[62vh] w-full rounded-lg border border-[var(--sb-border)] bg-white"
-      />
-    );
-  }
-  if (content) return <Markdown content={content} />;
-  if (url) {
-    return (
-      <a href={url} download={item.title} className="sb-btn" data-variant="secondary">
-        <Download className="h-3.5 w-3.5" />
-        下载文件
-      </a>
-    );
-  }
-  return <div className="py-10 text-center text-[13px] text-[var(--sb-text-2)]">这个资料没有可预览的内容。</div>;
 }
 
 function formatSchedule(schedule: string, timezone?: string): string {

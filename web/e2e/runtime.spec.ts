@@ -380,6 +380,60 @@ test.describe("runtime features in the browser", () => {
     }
   });
 
+  test("library items and chat files download with their names", async ({ page }) => {
+    await login(page);
+    const bot = await createBot(page.request, "下载");
+    try {
+      const libraryName = `验收资料-${tag}.txt`;
+      const libraryText = `资料内容 ${tag}`;
+      const uploaded = await page.request.post(`/api/bots/${bot.id}/library/files`, {
+        multipart: { file: { name: libraryName, mimeType: "text/plain", buffer: Buffer.from(libraryText) } },
+      });
+      expect(uploaded.ok(), await uploaded.text()).toBeTruthy();
+
+      const chatName = `验收附件-${tag}.csv`;
+      const chatText = `名称,数量\n苹果,${tag}\n`;
+      const attachment = await page.request.post("/api/attachments", {
+        multipart: { file: { name: chatName, mimeType: "text/csv", buffer: Buffer.from(chatText) } },
+      });
+      expect(attachment.ok(), await attachment.text()).toBeTruthy();
+      const attachmentId = (await attachment.json()).attachment.id as string;
+      const created = await page.request.post("/api/conversations", { data: { kind: "direct", bot_id: bot.id } });
+      const conv = (await created.json()).conversation.id as string;
+      const sent = await page.request.post(`/api/conversations/${conv}/messages`, {
+        data: { content: "收到附件只需回复“好”。", client_msg_id: `ui-${tag}-dl`, attachment_ids: [attachmentId] },
+      });
+      expect(sent.ok(), await sent.text()).toBeTruthy();
+
+      const saved = async (trigger: () => Promise<void>) => {
+        const [download] = await Promise.all([page.waitForEvent("download"), trigger()]);
+        return { name: download.suggestedFilename(), text: fs.readFileSync((await download.path())!, "utf8") };
+      };
+
+      // The file card in the chat downloads instead of opening a tab.
+      await page.goto(`/?conv=${conv}`);
+      const card = page.locator("[data-attachment-file]", { hasText: chatName });
+      await expect(card).toBeVisible({ timeout: 20_000 });
+      expect(await saved(() => card.click())).toEqual({ name: chatName, text: chatText });
+
+      // Library: the row's download button, the menu and the preview header.
+      await page.locator("button.sb-tab", { hasText: "资料库" }).click();
+      const row = page.getByRole("link", { name: `下载 ${libraryName}` });
+      await expect(row).toBeVisible({ timeout: 20_000 });
+      expect(await saved(() => row.click())).toEqual({ name: libraryName, text: libraryText });
+      await page.getByText(libraryName, { exact: true }).click();
+      const preview = page.getByRole("dialog");
+      await expect(preview.locator("iframe")).toBeVisible();
+      await page.screenshot({ path: path.join(shotsDir, "library-preview-download.png") });
+      expect(await saved(() => preview.getByRole("link", { name: `下载 ${libraryName}` }).click())).toEqual({
+        name: libraryName,
+        text: libraryText,
+      });
+    } finally {
+      await page.request.delete(`/api/bots/${bot.id}`, { data: {} });
+    }
+  });
+
   test("memory panel shows pins, archive and tidy", async ({ page }) => {
     await login(page);
     const content = `验收UI记忆-${tag}：周报用表格格式`;

@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	libindex "superbot/internal/library"
 	"superbot/internal/officetext"
 	"superbot/internal/store"
 )
@@ -176,7 +177,7 @@ func (t *readLibraryTool) Execute(ctx context.Context, args json.RawMessage) (Re
 	content := item.Content
 	var notes []string
 	if item.FilePath != "" {
-		name := libraryFileName(item)
+		name := libindex.FileName(item)
 		raw, readErr := os.ReadFile(item.FilePath)
 		switch {
 		case readErr != nil:
@@ -207,24 +208,6 @@ func (t *readLibraryTool) Execute(ctx context.Context, args json.RawMessage) (Re
 		text += "\n\n" + strings.Join(notes, "\n")
 	}
 	return Result{Content: text}, nil
-}
-
-// libraryFileName is the name the item's file should have when copied out:
-// the original upload name when known, else the title, keeping the file's
-// own extension so tools recognise its format.
-func libraryFileName(item store.LibraryItem) string {
-	var meta struct {
-		OriginalName string `json:"original_name"`
-	}
-	_ = json.Unmarshal(item.Metadata, &meta)
-	name := strings.TrimSpace(meta.OriginalName)
-	if name == "" {
-		name = strings.TrimSpace(item.Title)
-	}
-	if ext := filepath.Ext(item.FilePath); ext != "" && !strings.EqualFold(filepath.Ext(name), ext) {
-		name += ext
-	}
-	return name
 }
 
 // workspaceRelative returns the path of hostPath inside the workspace, or ""

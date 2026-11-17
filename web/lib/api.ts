@@ -769,6 +769,13 @@ export const api = {
   deleteLibraryItem(id: string) {
     return request<void>(`/api/library/${id}`, { method: "DELETE", body: jsonBody({}) });
   },
+  // Saves any Library item as a file: its stored file, or a document's text as .md.
+  libraryDownloadURL(id: string) {
+    return `/api/library/${id}/download`;
+  },
+  attachmentDownloadURL(url: string) {
+    return `${url}${url.includes("?") ? "&" : "?"}download=1`;
+  },
   listBotRoutines(botId?: string) {
     const query = botId ? `?bot_id=${encodeURIComponent(botId)}` : "";
     return request<{ routines: BotRoutine[] }>(`/api/bot-routines${query}`);

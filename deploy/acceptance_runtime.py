@@ -21,6 +21,7 @@ import sys
 import time
 import traceback
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
@@ -679,7 +680,7 @@ def scenario_builtin_skill(world):
 
 
 def tool_rows(conv):
-    return sql(f"select ti.name, ti.status, left(coalesce(ti.error, ''), 160) from tool_invocations ti "
+    return sql(f"select ti.name, ti.status, translate(left(coalesce(ti.error, ''), 160), E'\\n\\r\\t', '   ') from tool_invocations ti "
                f"join runs r on r.id = ti.run_id where r.conversation_id = '{conv}' order by ti.created_at")
 
 
@@ -811,7 +812,73 @@ def scenario_step_limit(world):
     return evidence
 
 
+def fetch_raw(path):
+    """GET a file the way the browser downloads it: status, headers and bytes."""
+    try:
+        with opener.open(urllib.request.Request(BASE + path), timeout=60) as response:
+            return response.status, response.headers, response.read()
+    except urllib.error.HTTPError as error:
+        return error.code, error.headers, error.read()
+
+
+def disposition_name(header):
+    """The UTF-8 file name of a Content-Disposition header."""
+    marker = "filename*=UTF-8''"
+    if marker not in header:
+        return ""
+    return urllib.parse.unquote(header.split(marker, 1)[1].split(";", 1)[0])
+
+
+def scenario_send_file(world):
+    """A bot hands over a Word file it made; the user downloads it from the chat and from the Library."""
+    import io
+    import zipfile
+    bot = world.bot("发文件", "你是办公助手，会用电脑生成 Office 文件。")
+    output = f"验收交付-{TAG}.docx"
+    conv = world.direct(bot)
+    send(conv, f"在你的电脑里用 python-docx 新建一个 Word 文件，正文写一句「验收交付 {TAG}」，"
+               f"保存为 /workspace/out/{output}，然后把这个文件发给我。")
+    wait_idle(conv, 360)
+    tools = tool_rows(conv)
+    files = [a for m in messages(conv) if m["sender_type"] == "bot" for a in (m.get("attachments") or [])]
+    texts = bot_texts(conv)
+    evidence = (f"tools={[(n, s) for n, s, _ in tools]} files={[(a['filename'], a['size_bytes']) for a in files]} "
+                f"last={texts[-1][-120:] if texts else ''!r}")
+    assert any(name == "send_file" and status == "done" for name, status, _ in tools), "send_file was not used: " + evidence
+    sent = [a for a in files if a["filename"] == output]
+    assert sent, "the file is not attached to a bot message: " + evidence
+
+    status, headers, body = fetch_raw(sent[0]["url"] + "?download=1")
+    disposition = headers.get("Content-Disposition", "")
+    evidence += f" chat_download={status} name={disposition_name(disposition)!r} {len(body)}B"
+    assert status == 200 and disposition.startswith("attachment") and disposition_name(disposition) == output, evidence
+    with zipfile.ZipFile(io.BytesIO(body)) as archive:
+        assert TAG in archive.read("word/document.xml").decode("utf-8"), "the downloaded file lacks the text: " + evidence
+
+    item = wait(lambda: sql(f"select id from library_items where bot_id = '{bot['id']}' and title = '{output}'"),
+                60, what="the file in the Library")
+    status, headers, library_body = fetch_raw(f"/api/library/{item[0][0]}/download")
+    evidence += f" library_download={status} name={disposition_name(headers.get('Content-Disposition', ''))!r}"
+    assert status == 200 and library_body == body, "the Library download differs: " + evidence
+
+    document = sql("select id from library_items where file_path = '' and content <> '' "
+                   "and mime_type like 'text/markdown%' order by created_at desc limit 1")
+    if document:
+        status, headers, text = fetch_raw(f"/api/library/{document[0][0]}/download")
+        name = disposition_name(headers.get("Content-Disposition", ""))
+        evidence += f" document_download={status} name={name!r} {len(text)}B"
+        assert status == 200 and name.endswith(".md") and text, "a document without a file did not download as .md: " + evidence
+
+    send(conv, "你刚才发给我的文件叫什么名字？只回答文件名。")
+    wait_idle(conv, 120)
+    texts = bot_texts(conv)
+    evidence += f" recall={texts[-1][-80:] if texts else ''!r}"
+    assert texts and output in texts[-1], "the bot does not know which file it sent: " + evidence
+    return evidence
+
+
 SCENARIOS = {
+    "sendfile": scenario_send_file,
     "documents": scenario_documents,
     "attachment": scenario_attachment_template,
     "search": scenario_search_fallback,

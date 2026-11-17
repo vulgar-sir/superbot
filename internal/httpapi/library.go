@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	libindex "superbot/internal/library"
 	"superbot/internal/store"
 )
 
@@ -85,6 +86,7 @@ func (s *Server) handleListBotLibrary(w http.ResponseWriter, r *http.Request) {
 func (s *Server) libraryRoutes(r chi.Router) {
 	r.Get("/{itemID}", s.handleGetLibraryItem)
 	r.Get("/{itemID}/file", s.handleGetLibraryFile)
+	r.Get("/{itemID}/download", s.handleDownloadLibraryItem)
 	r.Get("/{itemID}/preview", s.handleLibraryPreview)
 	r.Delete("/{itemID}", s.handleDeleteLibraryItem)
 }
@@ -197,17 +199,85 @@ func (s *Server) handleGetLibraryFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "library item has no file")
 		return
 	}
+	path, found := s.libraryFilePath(item)
+	if !found {
+		writeError(w, http.StatusNotFound, "not_found", "library file not found")
+		return
+	}
+	disposition := "inline"
+	if r.URL.Query().Get("download") != "" || !inlineSafe(libraryFileType(item, path)) {
+		disposition = "attachment"
+	}
+	w.Header().Set("Content-Disposition", contentDisposition(disposition, libindex.FileName(item)))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	http.ServeFile(w, r, path)
+}
+
+// handleDownloadLibraryItem saves any Library item as a file: the stored
+// file itself, or for documents and pages their text as .md (or the type
+// they were saved as).
+func (s *Server) handleDownloadLibraryItem(w http.ResponseWriter, r *http.Request) {
+	itemID, ok := parseUUIDParam(w, r, "itemID")
+	if !ok {
+		return
+	}
+	item, err := s.db.GetLibraryItem(r.Context(), store.GetLibraryItemParams{
+		ID: itemID, OwnerID: accountFrom(r),
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "not_found", "library item not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal", "could not load library item")
+		return
+	}
+	name := libindex.FileName(item)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if strings.TrimSpace(item.FilePath) != "" {
+		path, found := s.libraryFilePath(item)
+		if !found {
+			writeError(w, http.StatusNotFound, "not_found", "library file not found")
+			return
+		}
+		w.Header().Set("Content-Disposition", contentDisposition("attachment", name))
+		http.ServeFile(w, r, path)
+		return
+	}
+	if item.Content == "" {
+		writeError(w, http.StatusNotFound, "not_found", "library item has nothing to download")
+		return
+	}
+	contentType := mime.TypeByExtension(libindex.TextExtension(item.MimeType))
+	if contentType == "" || !strings.HasPrefix(contentType, "text/") && !strings.Contains(contentType, "json") {
+		contentType = "text/plain; charset=utf-8"
+	} else if !strings.Contains(contentType, "charset") {
+		contentType += "; charset=utf-8"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Disposition", contentDisposition("attachment", name))
+	_, _ = io.WriteString(w, item.Content)
+}
+
+// libraryFilePath is the item's stored file when it exists inside the data
+// directory; anything outside it is never served.
+func (s *Server) libraryFilePath(item store.LibraryItem) (string, bool) {
 	root := filepath.Clean(s.cfg.DataDir)
 	path := filepath.Clean(item.FilePath)
 	if !strings.HasPrefix(path, root+string(os.PathSeparator)) {
-		writeError(w, http.StatusNotFound, "not_found", "library file not found")
-		return
+		return "", false
 	}
-	if _, err := os.Stat(path); err != nil {
-		writeError(w, http.StatusNotFound, "not_found", "library file not found")
-		return
+	if info, err := os.Stat(path); err != nil || info.IsDir() {
+		return "", false
 	}
-	http.ServeFile(w, r, path)
+	return path, true
+}
+
+func libraryFileType(item store.LibraryItem, path string) string {
+	if byExt := mime.TypeByExtension(filepath.Ext(path)); byExt != "" {
+		return byExt
+	}
+	return item.MimeType
 }
 
 func (s *Server) handleGetLibraryItem(w http.ResponseWriter, r *http.Request) {

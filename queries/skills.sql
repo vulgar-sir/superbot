@@ -71,3 +71,6 @@ WHERE id = $1 AND owner_id = $2;
 
 -- name: SetSkillDescriptionEn :exec
 UPDATE skills SET description_en = $3 WHERE id = $1 AND owner_id = $2;
+
+-- name: SetSkillDescription :exec
+UPDATE skills SET description = $3, updated_at = now() WHERE id = $1 AND owner_id = $2;

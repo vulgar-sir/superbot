@@ -863,6 +863,7 @@ func (e *Engine) buildRegistry(ctx context.Context, root *os.Root, bot store.Bot
 	if conv.Kind != "subagent" {
 		all = append(all,
 			tools.NewPollTool(e.db, e.bus, conv.ID, bot.ID, cycle.ID),
+			tools.NewSendFileTool(e.db, e.bus, bot.OwnerID, conv.ID, bot.ID, cycle.ID, root),
 			tools.NewProactiveMessageTool(e.db, e.bus, bot.OwnerID, bot.ID, bot.Name, proactiveConversation),
 			tools.NewProactiveSettingTool(e.db, bot.OwnerID, bot.ID),
 			tools.NewGitHubReviewTool(e.connectors, bot.OwnerID),
@@ -1058,15 +1059,24 @@ func (e *Engine) buildMessages(ctx context.Context, bot store.Bot, conv store.Co
 
 	attachmentNotes := make(map[uuid.UUID]string)
 	imagesByMessage := make(map[uuid.UUID][]llm.Part)
+	// Files a bot sent with send_file: the transcript names them on that
+	// bot's message instead of treating them as user uploads.
+	sentFiles := make(map[uuid.UUID][]string)
 	if len(recent) > 0 {
 		ids := make([]uuid.UUID, 0, len(recent))
+		fromBot := make(map[uuid.UUID]bool, len(recent))
 		for _, msg := range recent {
 			ids = append(ids, msg.ID)
+			fromBot[msg.ID] = msg.SenderType == "bot"
 		}
 		metas, err := e.db.ListAttachmentMetaForMessages(ctx, ids)
 		if err == nil {
 			for _, meta := range metas {
 				if meta.MessageID == nil {
+					continue
+				}
+				if fromBot[*meta.MessageID] {
+					sentFiles[*meta.MessageID] = append(sentFiles[*meta.MessageID], meta.Filename)
 					continue
 				}
 				note := fmt.Sprintf("【附件：%s（%s，%d 字节）】", meta.Filename, meta.MimeType, meta.SizeBytes)
@@ -1210,6 +1220,9 @@ func (e *Engine) buildMessages(ctx context.Context, bot store.Bot, conv store.Co
 			continue
 		}
 		content := strings.TrimSpace(msg.Content)
+		if files := sentFiles[msg.ID]; len(files) > 0 {
+			content = strings.TrimSpace(content + "\n[已把文件发给用户：" + strings.Join(files, "、") + "]")
+		}
 		if content == "" || messageKind(msg) == messageKindCheckpoint {
 			continue
 		}

@@ -1,11 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { FileText, Image as ImageIcon, Loader2, MoreHorizontal, Trash2 } from "lucide-react";
+import { Download, Eye, FileText, Image as ImageIcon, Loader2, MoreHorizontal, Trash2 } from "lucide-react";
 
 import { api, ApiError } from "@/lib/api";
 import type { Bot, LibraryItem, LibraryItemDetail } from "@/lib/types";
-import { Markdown } from "./Markdown";
+import { LibraryDownloadButton, LibraryPreview, downloadLibraryItem } from "./LibraryPreview";
 import { Modal } from "./ui/Modal";
 import { Menu } from "./ui/Menu";
 import { useConfirm } from "./ui/Confirm";
@@ -118,6 +118,7 @@ export function BotLibrary({ bot }: { bot: Bot }) {
                 </span>
               </span>
             </button>
+            <LibraryDownloadButton item={item} variant="icon" />
             <button
               type="button"
               className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--sb-text-4)] transition hover:bg-[var(--sb-hover)] hover:text-[var(--sb-text)]"
@@ -144,8 +145,14 @@ export function BotLibrary({ bot }: { bot: Bot }) {
                 {
                   key: "open",
                   label: "打开",
-                  icon: <FileText className="h-3.5 w-3.5" />,
+                  icon: <Eye className="h-3.5 w-3.5" />,
                   onSelect: () => void openItem(menu.item),
+                },
+                {
+                  key: "download",
+                  label: "下载",
+                  icon: <Download className="h-3.5 w-3.5" />,
+                  onSelect: () => downloadLibraryItem(menu.item),
                 },
                 {
                   key: "delete",
@@ -167,13 +174,14 @@ export function BotLibrary({ bot }: { bot: Bot }) {
         title={detail?.item.title ?? "加载中…"}
         subtitle={detail?.item.description || undefined}
         size="lg"
+        headerExtra={detail && !detailLoading ? <LibraryDownloadButton item={detail.item} /> : undefined}
       >
         {detailLoading || !detail ? (
           <div className="flex justify-center py-16">
             <Loader2 className="sb-spin h-5 w-5 text-[var(--sb-text-3)]" />
           </div>
         ) : (
-          <Markdown content={detail.content} />
+          <LibraryPreview detail={detail} />
         )}
       </Modal>
       {confirmElement}
